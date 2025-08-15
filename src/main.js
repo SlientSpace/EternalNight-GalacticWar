@@ -1,11 +1,11 @@
 // 入口：把 UI、相机、事件、游戏循环整合在这里
 import {
-    GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT, WORLD_ASPECT_RATIO,
+    GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT, WORLD_ASPECT_RATIO, EMP_RANGE,
     NUM_SHIPS, SHIP_SIZE, RESPAWN_TIME, fleetColors, particleColors,
-    weaponProps, WEAPON_MISSILE, MISSILE_ENGAGEMENT_RADIUS
+    weaponProps, WEAPON_MISSILE, MISSILE_ENGAGEMENT_RADIUS, WARHEAD_EXPLOSION_RADIUS
 } from './constants.js';
 import { Vector } from './vector.js';
-import { Particle, KineticProjectile, SeekingProjectile, EnergyProjectile } from './projectiles.js';
+import { Particle, KineticProjectile, SeekingProjectile, EnergyProjectile, EMPProjectile, Drone } from './projectiles.js';
 import { Ship } from './ship.js';
 import { randomShipType, randomMissileWarhead } from './utils.js';
 
@@ -177,7 +177,27 @@ window.addEventListener('keydown', (e) => {
                 }
             }
         }
+    } else if (camera.manualControl && camera.trackedShip && camera.trackedShip.health > 0) {
+    switch (e.key.toLowerCase()) {
+        case 'f':
+            // 火控限制解锁
+            camera.trackedShip.fireControlOverride = !camera.trackedShip.fireControlOverride;
+            updateManualDisplay();
+            break;
+
+        case 'm':
+            // 自动反导弹
+            camera.trackedShip.autoAntiMissile = !camera.trackedShip.autoAntiMissile;
+            updateManualDisplay();
+            break;
+
+        case 'n':
+            // 自动反无人机
+            camera.trackedShip.autoAntiDrone = !camera.trackedShip.autoAntiDrone;
+            updateManualDisplay();
+            break;
     }
+}
 
     if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') controlInputs.up = true;
     if (e.key === 's' || e.key === 'S' || e.key === 'ArrowDown') controlInputs.down = true;
@@ -188,6 +208,7 @@ window.addEventListener('keydown', (e) => {
     updateTrackingDisplay();
     updateManualDisplay();
     updateShipInfoPanel();
+    updateTimeScaleDisplay();
 });
 window.addEventListener('keyup', (e) => {
     if (e.key === 'w' || e.key === 'W' || e.key === 'ArrowUp') controlInputs.up = false;
@@ -202,29 +223,74 @@ function updateTrackingDisplay() {
     if (!el) {
         el = document.createElement('div'); el.id = 'trackingDisplay';
         el.style.position = 'absolute'; el.style.left = '20px'; el.style.top = '20px'; el.style.zIndex = 11;
+        el.style.fontFamily = 'monospace';
+        el.style.fontSize = '14px';
+        el.style.padding = '6px 10px';
+        el.style.backgroundColor = 'rgba(0,0,0,0.7)';
+        el.style.borderRadius = '4px';
+        el.style.border = '1px solid rgba(255,255,255,0.2)';
         document.body.appendChild(el);
     }
     if (camera.trackedShip) {
-        el.textContent = `追踪舰队 ${camera.trackedShip.fleet} 飞船`;
-        el.style.color = fleetColors[camera.trackedShip.fleet];
+        const s = camera.trackedShip;
+        const pos = `位置: (${Math.round(s.position.x)}, ${Math.round(s.position.y)})`;
+        const vel = `速度: ${s.velocity.mag().toFixed(1)}`;
+        const healthPercent = ((s.health / s.maxHealth) * 100).toFixed(0);
+        const energyPercent = ((s.energy / s.maxEnergy) * 100).toFixed(0);
+        const heatPercent = ((s.heat / s.maxHeat) * 100).toFixed(0);
+        const dvPercent = ((s.deltaV / s.maxDeltaV) * 100).toFixed(0);
+        const empActive = (s.empedUntil && s.empedUntil > 0) ? `EMP:${Math.ceil(s.empedUntil)}帧` : 'EMP:无';
+        const jam = s.jamming ? '干扰:是' : '干扰:否';
+        const droneCount = s.drones ? s.drones.length : 0;
+        const avgFuelPct = (s.drones && s.drones.length>0) ? Math.round(s.drones.reduce((acc,d)=>acc + (d.fuel||0),0) / (600 * s.drones.length) * 100) : 0;
+        const readyMissileIdx = s.weapons.findIndex(w=>w===WEAPON_MISSILE);
+        const warheadTxt = (readyMissileIdx!==-1 && s.weaponWarheads && s.weaponWarheads[readyMissileIdx]) ? s.weaponWarheads[readyMissileIdx] : '—';
+        el.innerHTML = `
+            <div style="color: ${fleetColors[s.fleet]}; font-weight: bold;">追踪: 舰队 ${s.fleet} ${s.typeLabel}</div>
+            <div style="color: #ccc; font-size: 12px;">状态: ${s.state} | 生命值: ${healthPercent}%</div>
+            <div style="color: #aaa; font-size: 11px;">${pos} | ${vel}</div>
+            <div style="color:#9fe; font-size: 11px;">能量: ${energyPercent}% (${Math.round(s.energy)}/${s.maxEnergy}) | 热量: ${heatPercent}% (${Math.round(s.heat)}/${s.maxHeat}) | ΔV: ${dvPercent}% (${Math.round(s.deltaV)}/${s.maxDeltaV})</div>
+            <div style="color:#c9f; font-size: 11px;">电子战: ${empActive} | ${jam} | 无人机: ${droneCount}/3${droneCount>0?` (平均燃料${avgFuelPct}%)`:''} | 战斗部: ${warheadTxt}</div>
+        `;
     } else {
-        el.textContent = `未追踪`;
-        el.style.color = '#e2e8f0';
+        el.innerHTML = `<div style="color: #e2e8f0;">未追踪</div>`;
     }
 }
 function updateManualDisplay() {
     let el = document.getElementById('manualDisplay');
     if (!el) {
         el = document.createElement('div'); el.id = 'manualDisplay';
-        el.style.position = 'absolute'; el.style.left = '20px'; el.style.top = '40px'; el.style.zIndex = 11;
+        el.style.position = 'absolute'; el.style.left = '20px'; el.style.top = '90px'; el.style.zIndex = 11;
+        el.style.fontFamily = 'monospace';
+        el.style.fontSize = '14px';
+        el.style.padding = '6px 10px';
+        el.style.backgroundColor = 'rgba(0,0,0,0.7)';
+        el.style.borderRadius = '4px';
+        el.style.border = '1px solid rgba(255,255,255,0.2)';
         document.body.appendChild(el);
     }
     if (camera.manualControl && camera.trackedShip) {
-        el.textContent = `接管中：舰队 ${camera.trackedShip.fleet}`;
-        el.style.color = '#ff8800';
+        const s = camera.trackedShip;
+        const targetTxt = s.manualTarget && s.manualTarget.health > 0 ? `${s.manualTarget.typeLabel || '目标'} (${s.manualTarget.fleet})` : '无目标';
+        const fcs = s.fireControlOverride ? '已解锁' : '限制中';
+        const hasPdef = s.weapons.findIndex(w => w === 'point_defense') !== -1;
+        const pdMissile = s.autoAntiMissile ? '开' : '关';
+        const pdDrone = s.autoAntiDrone ? '开' : '关';
+        
+        let html = `
+            <div style="color:#ffb000;font-weight:bold;">接管中</div>
+            <div style="color:#bbb;font-size:12px;">目标: ${targetTxt}</div>
+            <div style="color:#9fe;font-size:12px;">火控: ${fcs} (F)</div>`;
+            
+        if (hasPdef) {
+            html += `<div style="color:#9fe;font-size:12px;">点防: 反导弹 ${pdMissile} (M) | 反无人机 ${pdDrone} (N)</div>`;
+        }
+        
+        html += `<div style="color:#999;font-size:11px;">提示: WSAD 控制，空格开火，单击敌舰设为目标</div>`;
+        
+        el.innerHTML = html;
     } else {
-        el.textContent = `未接管`;
-        el.style.color = '#e2e8f0';
+        el.innerHTML = `<div style=\"color:#e2e8f0;\">未接管</div>`;
     }
 }
 
@@ -282,7 +348,7 @@ function initShips() {
 }
 initShips();
 
-function createExplosion(x,y,color,scale=1){ for (let i=0;i<12*scale;i++) particles.push(new Particle(x,y,color)); }
+function createExplosion(x,y,color,scale=1){ for (let i=0;i<scale;i++) particles.push(new Particle(x,y,color)); }
 
 function updateCamera() {
     if (camera.trackedShip && camera.trackedShip.health > 0) {
@@ -295,6 +361,22 @@ function updateCamera() {
         updateManualDisplay();
         updateShipInfoPanel();
     }
+}
+
+function updateTimeScaleDisplay(){
+    let el = document.getElementById('timeScaleDisplay');
+    if (!el) {
+        el = document.createElement('div'); el.id = 'timeScaleDisplay';
+        el.style.position = 'absolute'; el.style.right = '20px'; el.style.top = '20px'; el.style.zIndex = 11;
+        el.style.fontFamily = 'monospace';
+        el.style.fontSize = '14px';
+        el.style.padding = '6px 10px';
+        el.style.backgroundColor = 'rgba(0,0,0,0.7)';
+        el.style.borderRadius = '4px';
+        el.style.border = '1px solid rgba(255,255,255,0.2)';
+        document.body.appendChild(el);
+    }
+    el.innerHTML = `<span style="color:#88f">时间倍率</span>: <span style="color:#fff">${timeScale.toFixed(1)}x</span>`;
 }
 
 function gameLoop() {
@@ -328,13 +410,34 @@ function gameLoop() {
         }
     }
 
-    // 更新并移动子弹/导弹
+    // 更新并移动子弹/导弹/无人机/EMP
     for (let i=0;i<projectiles.length;i++){
         const p = projectiles[i];
         if (p.constructor.name === 'SeekingProjectile' && p.fuel <= 0) { projectilesToRemoveIndices.add(i); continue; }
         if (p.isOffscreen()) { projectilesToRemoveIndices.add(i); continue; }
         if (p.constructor.name === 'SeekingProjectile') p.update(ships, timeScale);
+        else if (p.constructor.name === 'Drone') p.update(ships, timeScale);
         else p.update(timeScale);
+    }
+
+    // EMP 爆炸/生效处理：触发后影响范围内敌舰 EMP_DURATION
+    for (let i=0;i<projectiles.length;i++){
+        const p = projectiles[i];
+        if (p.constructor.name === 'EMPProjectile' && p.activated) {
+            for (let j=0;j<ships.length;j++){
+                const s = ships[j];
+                if (s.fleet === p.fleet) continue;
+                const d = Math.sqrt(
+                    Math.pow(p.position.x - s.position.x,2) + Math.pow(p.position.y - s.position.y,2)
+                );
+                if (d < EMP_RANGE) {
+                    s.empedUntil = Math.max(s.empedUntil || 0, 180);
+                    s.jamming = true;
+                }
+            }
+            projectilesToRemoveIndices.add(i);
+            createExplosion(p.position.x, p.position.y, '#9977ff', 1.5);
+        }
     }
 
     // 弹对弹判定（用于近防）
@@ -364,37 +467,36 @@ function gameLoop() {
                 const d = Math.sqrt(Math.pow(p.position.x - ship.position.x,2) + Math.pow(p.position.y - ship.position.y,2));
                 if (d < 10) {
                     if (p.constructor.name === 'SeekingProjectile') {
-                        // 导弹命中 -> 根据战斗部处理范围伤害或穿甲
                         const wh = p.warhead;
+                        const R = WARHEAD_EXPLOSION_RADIUS[wh] ?? 0;
                         if (wh === 'kinetic') {
-                            ship.health -= p.damage;
+                            ship.health -= p.damage; // 无爆炸
                         } else if (wh === 'ap') {
-                            ship.health -= p.damage * 1.5;
-                        } else if (wh === 'he') {
-                            ship.health -= p.damage;
-                            const R = 60;
-                            for (let k=0;k<ships.length;k++){
-                                if (k===j) continue;
-                                const s2 = ships[k];
-                                if (s2.fleet !== ship.fleet) {
-                                    const dd = Math.sqrt(Math.pow(p.position.x - s2.position.x,2) + Math.pow(p.position.y - s2.position.y,2));
-                                    if (dd < R) s2.health -= p.damage * 0.5;
-                                }
-                            }
-                        } else if (wh === 'nuclear') {
-                            const R = 200;
-                            for (let k=0;k<ships.length;k++){
-                                const s2 = ships[k];
-                                if (s2.fleet !== p.fleet) {
-                                    const dd = Math.sqrt(Math.pow(p.position.x - s2.position.x,2) + Math.pow(p.position.y - s2.position.y,2));
-                                    if (dd < R) {
-                                        const factor = Math.max(0, 1 - dd / R);
-                                        s2.health -= p.damage * 5 * factor;
+                            ship.health -= p.damage * 1.5; // 无爆炸
+                        } else {
+                            // 高爆/核：中心直接伤害 + 半径衰减
+                            const baseMult = wh === 'nuclear' ? 5 : 1;
+                            // 直接命中的目标
+                            ship.health -= p.damage * baseMult;
+                            // 范围溅射
+                            if (R > 0) {
+                                for (let k=0;k<ships.length;k++){
+                                    if (k===j) continue;
+                                    const s2 = ships[k];
+                                    if (s2.fleet !== p.fleet) {
+                                        const dd = Math.hypot(p.position.x - s2.position.x, p.position.y - s2.position.y);
+                                        if (dd < R) {
+                                            const factor = Math.max(0, 1 - dd / R);
+                                            s2.health -= p.damage * baseMult * 0.7 * factor; // 较柔和的衰减
+                                        }
                                     }
                                 }
+                                // 破片散布视觉（不额外伤害，只粒子）
+                                const shards = wh === 'nuclear' ? 14 : 8;
+                                for (let t=0;t<shards;t++) createExplosion(p.position.x, p.position.y, '#ffcc66', 0.7);
                             }
                         }
-                        createExplosion(p.position.x, p.position.y, '#ff8844', p.warhead === 'nuclear' ? 3 : 1.2);
+                        createExplosion(p.position.x, p.position.y, '#ff8844', wh === 'nuclear' ? 3 : (R>0?1.6:1.0));
                         projectilesToRemoveIndices.add(i);
                         if (ship.health <= 0) shipsToRemoveIndices.add(j);
                         break;
@@ -438,6 +540,35 @@ function gameLoop() {
 
     updateCamera();
 
+    // 接管模式下：自动点防火控（反导弹/反无人机）
+    if (camera.manualControl && camera.trackedShip && camera.trackedShip.health > 0) {
+        const s = camera.trackedShip;
+        // 找出PDEF武器索引
+        const pdefIndex = s.weapons.findIndex(w => w === 'point_defense');
+        if (pdefIndex !== -1 && s.shootCooldowns[pdefIndex] <= 0) {
+            const pdefRange = (weaponProps['point_defense']?.range) || 120;
+            let bestTarget = null;
+            let bestDist = Infinity;
+            // 搜索导弹/无人机
+            for (const p of projectiles) {
+                if (p.fleet === s.fleet) continue;
+                const isMissile = p.constructor && p.constructor.name === 'SeekingProjectile';
+                const isDrone = p.constructor && p.constructor.name === 'Drone';
+                if ((isMissile && s.autoAntiMissile) || (isDrone && s.autoAntiDrone)) {
+                    const dx = Math.abs(s.position.x - p.position.x);
+                    const dy = Math.abs(s.position.y - p.position.y);
+                    const distanceX = Math.min(dx, GAME_WORLD_WIDTH - dx);
+                    const distanceY = Math.min(dy, GAME_WORLD_HEIGHT - dy);
+                    const d = Math.hypot(distanceX, distanceY);
+                    if (d <= pdefRange && d < bestDist) { bestDist = d; bestTarget = p; }
+                }
+            }
+            if (bestTarget) {
+                s.shoot(pdefIndex, bestTarget, projectiles);
+            }
+        }
+    }
+
     for (const ship of ships) {
         if (camera.manualControl && camera.trackedShip === ship) ship.controlUpdate(controlInputs, projectiles);
         ship.update(timeScale);
@@ -470,6 +601,8 @@ function gameLoop() {
 
     updateManualDisplay();
     updateShipInfoPanel();
+
+    updateTrackingDisplay();
 
     requestAnimationFrame(gameLoop);
 }

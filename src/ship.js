@@ -1,7 +1,7 @@
 import { Vector } from './vector.js';
-import { weaponProps, WEAPON_PULSE_LASER, WEAPON_CONTINUOUS_LASER, WEAPON_RAPID_ENERGY, WEAPON_PDEF, WEAPON_COIL, WEAPON_MISSILE, shipTypes, fleetColors } from './constants.js';
-import { EnergyProjectile, KineticProjectile, SeekingProjectile } from './projectiles.js';
-import { MAX_FORCE, PERCEPTION_RADIUS, SEPARATION_RADIUS, SEPARATION_WEIGHT, ALIGNMENT_WEIGHT, COHESION_WEIGHT, ATTACK_WEIGHT, FLEE_WEIGHT, MISSILE_ENGAGEMENT_RADIUS } from './constants.js';
+import { weaponProps, WEAPON_PULSE_LASER, WEAPON_CONTINUOUS_LASER, WEAPON_RAPID_ENERGY, WEAPON_PDEF, WEAPON_COIL, WEAPON_MISSILE, WEAPON_EMP, WEAPON_DRONE_BAY, shipTypes, fleetColors } from './constants.js';
+import { EnergyProjectile, KineticProjectile, SeekingProjectile, EMPProjectile, Drone } from './projectiles.js';
+import { MAX_FORCE, PERCEPTION_RADIUS, SEPARATION_RADIUS, SEPARATION_WEIGHT, ALIGNMENT_WEIGHT, COHESION_WEIGHT, ATTACK_WEIGHT, FLEE_WEIGHT, MISSILE_ENGAGEMENT_RADIUS, HEAT_DISSIPATION_RATE, ENERGY_REGEN_RATE, DELTA_V_CONSUMPTION_RATE, OVERHEATING_DAMAGE, EMP_DURATION, MAX_ANGULAR_SPEED } from './constants.js';
 
 export class Ship {
     constructor(x,y,fleet, shipTypeKey) {
@@ -20,11 +20,21 @@ export class Ship {
         this.maxSpeed = t.maxSpeed;
         this.weaponSlots = t.weaponSlots;
 
+        // 系统管理
+        this.maxEnergy = t.maxEnergy;
+        this.energy = this.maxEnergy;
+        this.maxHeat = t.maxHeat;
+        this.heat = 0;
+        this.maxDeltaV = t.maxDeltaV;
+        this.deltaV = this.maxDeltaV;
+        this.empedUntil = 0; // EMP 持续时间
+        this.jamming = false; // 是否被干扰
+
         // 武器槽：随机分配（并为导弹分配战斗部）
         this.weapons = [];
         this.weaponWarheads = [];
         this.shootCooldowns = [];
-        const weaponTypes = [WEAPON_PULSE_LASER, WEAPON_CONTINUOUS_LASER, WEAPON_RAPID_ENERGY, WEAPON_PDEF, WEAPON_COIL, WEAPON_MISSILE];
+        const weaponTypes = [WEAPON_PULSE_LASER, WEAPON_CONTINUOUS_LASER, WEAPON_RAPID_ENERGY, WEAPON_PDEF, WEAPON_COIL, WEAPON_MISSILE, WEAPON_EMP, WEAPON_DRONE_BAY];
         for (let i = 0; i < this.weaponSlots; i++) {
             const wt = weaponTypes[Math.floor(Math.random()*weaponTypes.length)];
             this.weapons.push(wt);
@@ -35,6 +45,10 @@ export class Ship {
         this.laserTarget = null;
         this.manualTarget = null;
         this.state = 'patrol';
+        this.drones = []; // 无人机列表
+        this.fireControlOverride = false; // 火控限制解锁状态
+        this.autoAntiMissile = false; // 自动反导弹开关
+        this.autoAntiDrone = false; // 自动反无人机开关
     }
 
     applyForce(force){ this.acceleration.add(force); }
@@ -206,6 +220,11 @@ export class Ship {
         if (this.shootCooldowns[weaponIndex] > 0) return;
         if (!target) return;
 
+        // 检查能量和热量限制
+        if (this.energy < props.energyCost) return;
+        if (this.heat + props.heatGen > this.maxHeat * 0.9) return; // 防止过热
+        if (this.empedUntil > 0 && !(wtype === WEAPON_COIL || wtype === WEAPON_RAPID_ENERGY)) return; // EMP 只影响非动能武器，速射动能与线圈炮可射击
+
         const dx = this.position.x - target.position.x;
         const dy = this.position.y - target.position.y;
         const distanceX = Math.min(Math.abs(dx), 5000 - Math.abs(dx));
@@ -215,28 +234,105 @@ export class Ship {
         let rangeCheck = props.range;
         if (target.constructor.name === 'SeekingProjectile') rangeCheck = MISSILE_ENGAGEMENT_RADIUS;
 
-        // 激光直接命中
+        // 覆盖射程：接管模式下启用火控限制解锁
+        const ignoreRange = this.fireControlOverride === true;
+
+        // 激光武器（立即击中）
         if (wtype === WEAPON_PULSE_LASER || wtype === WEAPON_CONTINUOUS_LASER) {
-            if (distance <= rangeCheck) {
-                if (target.health !== undefined) target.health -= props.damage;
-                this.laserTarget = target;
+            let didHit = false;
+            if (ignoreRange || distance <= rangeCheck) {
+                // 命中判定：有偏移概率
+                let targetPoint = target.position.clone ? target.position.clone() : new Vector(target.position.x, target.position.y);
+                if (ignoreRange) {
+                    // 根据距离和武器类型引入随机偏移与角度误差
+                    const baseMissProb = 0.35; // 基础偏移概率
+                    const extraMissProb = Math.min(0.5, distance / (rangeCheck || 1) * 0.25);
+                    const missProb = Math.max(0.25, baseMissProb + extraMissProb);
+                    if (Math.random() < missProb) {
+                        const offR = (10 + distance * 0.15) * (0.6 + Math.random()*0.8);
+                        const offA = Math.random() * Math.PI * 2;
+                        targetPoint = new Vector(targetPoint.x + Math.cos(offA)*offR, targetPoint.y + Math.sin(offA)*offR);
+                    }
+                }
+                const dx2 = this.position.x - targetPoint.x;
+                const dy2 = this.position.y - targetPoint.y;
+                const dist2 = Math.hypot(dx2, dy2);
+                const distanceAttenuation = Math.max(0.3, 1 - (rangeCheck ? Math.min(dist2, rangeCheck) / rangeCheck : 1));
+                const actualDamage = props.damage * distanceAttenuation;
+                // 只有当目标点确实是目标实体位置附近时才算命中
+                if (target.health !== undefined && dist2 <= 12) {
+                    target.health -= actualDamage;
+                    didHit = true;
+                }
+                this.laserTarget = didHit ? target : null; // 只有命中才保留激光束
             } else {
                 this.laserTarget = null;
             }
             this.shootCooldowns[weaponIndex] = props.cooldown;
+            this.energy -= props.energyCost;
+            this.heat += props.heatGen;
             return;
         }
 
-        if (distance > rangeCheck) return;
+        // EMP 武器特殊逻辑（直线飞行近炸）
+        if (wtype === WEAPON_EMP) {
+            if (ignoreRange || distance <= rangeCheck) {
+                const newProjectile = new EMPProjectile(
+                    this.position.x,
+                    this.position.y,
+                    0, 0,
+                    this.fleet,
+                    props.damage,
+                    props.speed,
+                    '#9900ff',
+                    target // 传入目标对象
+                );
+                projectiles.push(newProjectile);
+                this.shootCooldowns[weaponIndex] = props.cooldown;
+                this.energy -= props.energyCost;
+                this.heat += props.heatGen;
+            }
+            return;
+        }
+
+        // 无人机发射
+        if (wtype === WEAPON_DRONE_BAY) {
+            if (this.drones.length < 3) { // 每艘船最多3架无人机
+                const angle = Math.random() * Math.PI * 2;
+                const drone = new Drone(
+                    this.position.x + Math.cos(angle) * 30,
+                    this.position.y + Math.sin(angle) * 30,
+                    this.fleet,
+                    this
+                );
+                this.drones.push(drone);
+                projectiles.push(drone);
+                this.shootCooldowns[weaponIndex] = props.cooldown;
+                this.energy -= props.energyCost;
+                this.heat += props.heatGen;
+            }
+            return;
+        }
+
+        if (!ignoreRange && distance > rangeCheck) return;
 
         const shortestDx = dx > 5000/2 ? dx - 5000 : (dx < -5000/2 ? dx + 5000 : dx);
         const shortestDy = dy > 3000/2 ? dy - 3000 : (dy < -3000/2 ? dy + 3000 : dy);
-        const desired = new Vector(-shortestDx, -shortestDy);
+        let desired = new Vector(-shortestDx, -shortestDy);
+
+        // 在火控解锁下，发射方向加入角度偏差
+        if (ignoreRange) {
+            const angle = Math.atan2(desired.y, desired.x);
+            const maxSpread = 0.18 + Math.min(0.6, distance / (rangeCheck || 200) * 0.12); // 距离越大越不准
+            const spread = (Math.random() * 2 - 1) * maxSpread;
+            const mag = desired.mag();
+            desired = new Vector(Math.cos(angle + spread) * mag, Math.sin(angle + spread) * mag);
+        }
 
         let newProjectile;
         switch (wtype) {
             case WEAPON_RAPID_ENERGY:
-                newProjectile = new EnergyProjectile(this.position.x, this.position.y, desired.x, desired.y, this.fleet, props.damage, props.speed, '#aaffff');
+                newProjectile = new KineticProjectile(this.position.x, this.position.y, desired.x, desired.y, this.fleet, props.damage, props.speed, '#00ff88');
                 projectiles.push(newProjectile);
                 break;
             case WEAPON_PDEF:
@@ -253,25 +349,80 @@ export class Ship {
                 projectiles.push(newProjectile);
                 break;
             default:
-                // fallback
                 newProjectile = new KineticProjectile(this.position.x, this.position.y, desired.x, desired.y, this.fleet, props.damage, props.speed || 30, '#ffffff');
                 projectiles.push(newProjectile);
                 break;
         }
         this.shootCooldowns[weaponIndex] = props.cooldown;
+        this.energy -= props.energyCost;
+        this.heat += props.heatGen;
     }
 
     update(timeScale) {
+        // 武器冷却
         for (let i=0;i<this.shootCooldowns.length;i++){
             this.shootCooldowns[i] -= timeScale;
             if (this.shootCooldowns[i] < 0) this.shootCooldowns[i] = 0;
         }
 
+        // EMP 效果
+        if (this.empedUntil > 0) {
+            this.empedUntil -= timeScale;
+            if (this.empedUntil <= 0) this.jamming = false;
+        }
+
+        // 热量管理  
+        this.heat -= HEAT_DISSIPATION_RATE * timeScale;
+        if (this.heat < 0) this.heat = 0;
+        if (this.heat >= this.maxHeat) {
+            this.health -= OVERHEATING_DAMAGE * timeScale;
+        }
+
+        // 能量管理
+        this.energy += ENERGY_REGEN_RATE * timeScale;
+        if (this.energy > this.maxEnergy) this.energy = this.maxEnergy;
+
+        // ΔV 管理（移动消耗）
+        if (this.velocity.mag() > 0.1) {
+            this.deltaV -= DELTA_V_CONSUMPTION_RATE * this.velocity.mag() * timeScale;
+            if (this.deltaV < 0) this.deltaV = 0;
+        }
+
+        // 运动更新
+        const prevVel = this.velocity.clone();
         const scaledAcceleration = this.acceleration.clone().mult(timeScale);
         this.velocity.add(scaledAcceleration);
-        this.velocity.limit(this.maxSpeed);
-        const sv = this.velocity.clone().mult(timeScale); this.position.add(sv);
+        
+        // ΔV 限制速度
+        const maxSpeedByDeltaV = this.deltaV > 10 ? this.maxSpeed : this.maxSpeed * 0.3;
+        this.velocity.limit(maxSpeedByDeltaV);
+
+        // 限制角速度（转向角度变化）
+        const prevAngle = Math.atan2(prevVel.y, prevVel.x);
+        const newAngle = Math.atan2(this.velocity.y, this.velocity.x);
+        let dAngle = newAngle - prevAngle;
+        // 归一化到 [-PI, PI]
+        while (dAngle > Math.PI) dAngle -= Math.PI * 2;
+        while (dAngle < -Math.PI) dAngle += Math.PI * 2;
+        const maxAngular = MAX_ANGULAR_SPEED * timeScale;
+        if (Math.abs(dAngle) > maxAngular) {
+            const clampedAngle = prevAngle + Math.sign(dAngle) * maxAngular;
+            const speedMag = this.velocity.mag();
+            this.velocity.x = Math.cos(clampedAngle) * speedMag;
+            this.velocity.y = Math.sin(clampedAngle) * speedMag;
+        }
+        
+        const sv = this.velocity.clone().mult(timeScale); 
+        this.position.add(sv);
         this.acceleration.mult(0);
+
+        // 更新无人机
+        for (let i = this.drones.length - 1; i >= 0; i--) {
+            const drone = this.drones[i];
+            if (drone.health <= 0 || drone.fuel <= 0) {
+                this.drones.splice(i, 1);
+            }
+        }
 
         if (this.laserTarget) {
             const distance = Math.sqrt(Math.pow(this.position.x - this.laserTarget.position.x,2) + Math.pow(this.position.y - this.laserTarget.position.y,2));
@@ -321,9 +472,21 @@ export class Ship {
 
         const primaryProps = weaponProps[this.primaryWeapon];
         if (isControlled && primaryProps) {
+            // 绘制所有武器射程圈
+            for (let i=0;i<this.weapons.length;i++){
+                const props = weaponProps[this.weapons[i]];
+                if (!props || !props.range) continue;
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, props.range * camera.zoom, 0, Math.PI*2);
+                const hue = 40 + (i * 30) % 300;
+                ctx.strokeStyle = `hsla(${hue}, 80%, 60%, 0.18)`;
+                ctx.lineWidth = 1.5;
+                ctx.stroke();
+            }
+            // 主武器高亮
             ctx.beginPath();
             ctx.arc(screenX, screenY, primaryProps.range * camera.zoom, 0, Math.PI*2);
-            ctx.strokeStyle = 'rgba(255,200,50,0.25)';
+            ctx.strokeStyle = 'rgba(255,200,50,0.35)';
             ctx.lineWidth = 2;
             ctx.stroke();
         }
@@ -331,12 +494,21 @@ export class Ship {
         if ((this.primaryWeapon === WEAPON_PULSE_LASER || this.primaryWeapon === WEAPON_CONTINUOUS_LASER) && this.laserTarget && this.laserTarget.health > 0) {
             const targetScreenX = (this.laserTarget.position.x - camera.x) * camera.zoom;
             const targetScreenY = (this.laserTarget.position.y - camera.y) * camera.zoom;
+            const dx = this.laserTarget.position.x - this.position.x;
+            const dy = this.laserTarget.position.y - this.position.y;
+            const dist = Math.hypot(dx, dy);
+            const maxRange = weaponProps[this.primaryWeapon].range;
+            const t = Math.min(1, dist / maxRange);
+            const alpha = Math.max(0.15, 1 - t); // 距离越远越透明
+            const width = (this.primaryWeapon === WEAPON_PULSE_LASER ? 2.2 : 2.6) * camera.zoom * (1 - 0.4*t);
             ctx.beginPath();
             ctx.moveTo(screenX, screenY);
             ctx.lineTo(targetScreenX, targetScreenY);
             ctx.strokeStyle = this.primaryWeapon === WEAPON_PULSE_LASER ? '#00ff88' : '#00ff00';
-            ctx.lineWidth = 2 * camera.zoom;
+            ctx.lineWidth = width;
+            ctx.globalAlpha = alpha;
             ctx.stroke();
+            ctx.globalAlpha = 1;
         }
 
         // 舰船三角体

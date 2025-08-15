@@ -1,5 +1,5 @@
 import { Vector } from './vector.js';
-import { GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT } from './constants.js';
+import { GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT, EMP_RANGE } from './constants.js';
 
 // 粒子（特效）
 export class Particle {
@@ -12,14 +12,14 @@ export class Particle {
     update(timeScale){
         const v = this.velocity.clone().mult(timeScale);
         this.position.add(v);
-        this.velocity.mult(0.95);
-        this.life -= 0.05 * timeScale;
+        this.velocity.mult(0.92);
+        this.life -= 0.04 * timeScale; // 更慢衰减，亮度更高
     }
     draw(ctx, camera){
         const screenX = (this.position.x - camera.x) * camera.zoom;
         const screenY = (this.position.y - camera.y) * camera.zoom;
-        ctx.beginPath(); ctx.arc(screenX, screenY, 2 * camera.zoom, 0, Math.PI*2);
-        ctx.fillStyle = this.color; ctx.globalAlpha = this.life; ctx.fill(); ctx.globalAlpha = 1;
+        ctx.beginPath(); ctx.arc(screenX, screenY, 2.2 * camera.zoom, 0, Math.PI*2);
+        ctx.fillStyle = this.color; ctx.globalAlpha = Math.min(1, this.life*1.2); ctx.fill(); ctx.globalAlpha = 1;
     }
 }
 
@@ -61,7 +61,7 @@ export class SeekingProjectile extends Weapon {
         this.target = target;
         this.maxSpeed = speed;
         this.maxForce = 0.1;
-        this.fuel = 200;
+        this.fuel = 300;
         this.warhead = warhead;
     }
     update(ships, timeScale){
@@ -119,5 +119,250 @@ export class EnergyProjectile extends KineticProjectile {
         const size = 3 * camera.zoom;
         ctx.beginPath(); ctx.arc(screenX, screenY, size, 0, Math.PI*2);
         ctx.fillStyle = this.color; ctx.fill();
+    }
+}
+
+// EMP 武器（电磁脉冲）
+export class EMPProjectile extends Weapon {
+    constructor(x, y, vx, vy, fleet, damage, speed, color, target) {
+        super(x, y, vx, vy, fleet, damage);
+        this.color = color || '#9900ff';
+        this.target = target;
+        this.speed = speed;
+        this.lifespan = 500; // 最大飞行时间（帧）
+        this.activated = false;
+        this.range = EMP_RANGE; // EMP 影响范围
+        this.proximityRange = Math.min(30, EMP_RANGE * 0.3); // 近炸感应范围
+        
+        // 设置初始速度朝向目标
+        if (target) {
+            const dx = target.position.x - x;
+            const dy = target.position.y - y;
+            this.velocity = new Vector(dx, dy);
+            this.velocity.setMag(this.speed);
+        } else {
+            this.velocity = new Vector(0, 0);
+        }
+    }
+
+    update(timeScale) {
+        // 如果已激活或没有目标，停止运动
+        if (this.activated || !this.target) {
+            this.lifespan -= timeScale;
+            return;
+        }
+        
+        // 检查目标是否仍然存活
+        if (this.target.health <= 0) {
+            this.activated = true;
+            return;
+        }
+        
+        // 计算与目标的距离
+        const dx = this.target.position.x - this.position.x;
+        const dy = this.target.position.y - this.position.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        
+        // 近炸判定：接近目标或燃料耗尽时激活
+        if (distance <= this.proximityRange || this.lifespan <= 0) {
+            this.activated = true;
+            return;
+        }
+        
+        // 继续朝目标飞行
+        const v = this.velocity.clone().mult(timeScale);
+        this.position.add(v);
+        this.lifespan -= timeScale;
+    }
+    
+    draw(ctx, camera) {
+        const screenX = (this.position.x - camera.x) * camera.zoom;
+        const screenY = (this.position.y - camera.y) * camera.zoom;
+        
+        if (!this.activated) {
+            // 飞行阶段显示为紫色球体
+            const size = 4 * camera.zoom;
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, size, 0, Math.PI * 2);
+            ctx.fillStyle = this.color;
+            ctx.globalAlpha = 0.8;
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            
+            // 添加拖尾效果
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, size * 1.5, 0, Math.PI * 2);
+            ctx.strokeStyle = this.color;
+            ctx.lineWidth = 1;
+            ctx.globalAlpha = 0.3;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        } else {
+            // 爆炸效果
+            const size = this.range * camera.zoom;
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, size, 0, Math.PI * 2);
+            ctx.strokeStyle = this.color;
+            ctx.lineWidth = 3;
+            ctx.globalAlpha = 0.3;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+        }
+    }
+    
+    isOffscreen() {
+        return this.activated && this.lifespan < -30; // EMP 爆炸后清理
+    }
+}
+
+// 无人机
+export class Drone extends Weapon {
+    constructor(x, y, fleet, motherShip) {
+        super(x, y, 0, 0, fleet, 15); // 无人机基础伤害
+        this.motherShip = motherShip;
+        this.health = 20;
+        this.maxHealth = 20;
+        this.fuel = 600; // 燃料限制
+        this.maxSpeed = 3.5;
+        this.maxForce = 0.08;
+        this.target = null;
+        this.state = 'patrol'; // patrol, attack, return
+        this.orbitAngle = Math.random() * Math.PI * 2;
+        this.orbitRadius = 60 + Math.random() * 40;
+        this.attackCooldown = 0;
+        this.size = 3;
+    }
+    
+    update(ships, timeScale) {
+        this.fuel -= timeScale;
+        this.attackCooldown -= timeScale;
+        if (this.attackCooldown < 0) this.attackCooldown = 0;
+        
+        // 寻找目标
+        if (!this.target || this.target.health <= 0) {
+            let closest = null;
+            let minDist = Infinity;
+            for (const ship of ships) {
+                if (ship.fleet !== this.fleet && ship.health > 0) {
+                    const dist = Math.sqrt(
+                        Math.pow(this.position.x - ship.position.x, 2) + 
+                        Math.pow(this.position.y - ship.position.y, 2)
+                    );
+                    if (dist < 200 && dist < minDist) {
+                        minDist = dist;
+                        closest = ship;
+                    }
+                }
+            }
+            this.target = closest;
+        }
+        
+        let desired = new Vector(0, 0);
+        
+        if (this.fuel < 100 || !this.motherShip || this.motherShip.health <= 0) {
+            // 返回母舰或自毁
+            this.state = 'return';
+            if (this.motherShip && this.motherShip.health > 0) {
+                desired = new Vector(
+                    this.motherShip.position.x - this.position.x,
+                    this.motherShip.position.y - this.position.y
+                );
+                desired.setMag(this.maxSpeed);
+            } else {
+                this.health = 0; // 母舰已毁，自毁
+            }
+        } else if (this.target && this.target.health > 0) {
+            // 攻击模式
+            this.state = 'attack';
+            const dist = Math.sqrt(
+                Math.pow(this.position.x - this.target.position.x, 2) + 
+                Math.pow(this.position.y - this.target.position.y, 2)
+            );
+            
+            if (dist < 30 && this.attackCooldown <= 0) {
+                // 攻击目标
+                this.target.health -= this.damage;
+                this.attackCooldown = 20;
+                this.health -= 5; // 撞击伤害
+            }
+            
+            desired = new Vector(
+                this.target.position.x - this.position.x,
+                this.target.position.y - this.position.y
+            );
+            desired.setMag(this.maxSpeed);
+        } else {
+            // 巡逻模式 - 围绕母舰盘旋
+            this.state = 'patrol';
+            this.orbitAngle += 0.02 * timeScale;
+            const orbitX = this.motherShip.position.x + Math.cos(this.orbitAngle) * this.orbitRadius;
+            const orbitY = this.motherShip.position.y + Math.sin(this.orbitAngle) * this.orbitRadius;
+            
+            desired = new Vector(orbitX - this.position.x, orbitY - this.position.y);
+            desired.setMag(this.maxSpeed);
+        }
+        
+        // 应用运动
+        const steer = desired.clone().sub(this.velocity);
+        steer.limit(this.maxForce);
+        this.velocity.add(steer.clone().mult(timeScale));
+        this.velocity.limit(this.maxSpeed);
+        
+        const movement = this.velocity.clone().mult(timeScale);
+        this.position.add(movement);
+        
+        // 边界处理
+        if (this.position.x < 0) this.position.x = GAME_WORLD_WIDTH;
+        if (this.position.x > GAME_WORLD_WIDTH) this.position.x = 0;
+        if (this.position.y < 0) this.position.y = GAME_WORLD_HEIGHT;
+        if (this.position.y > GAME_WORLD_HEIGHT) this.position.y = 0;
+    }
+    
+    draw(ctx, camera) {
+        if (this.health <= 0) return;
+        
+        const screenX = (this.position.x - camera.x) * camera.zoom;
+        const screenY = (this.position.y - camera.y) * camera.zoom;
+        const size = this.size * camera.zoom;
+        
+        // 无人机本体（小三角形）
+        const angle = Math.atan2(this.velocity.y, this.velocity.x);
+        ctx.save();
+        ctx.translate(screenX, screenY);
+        ctx.rotate(angle);
+        
+        ctx.beginPath();
+        ctx.moveTo(size, 0);
+        ctx.lineTo(-size, -size/2);
+        ctx.lineTo(-size, size/2);
+        ctx.closePath();
+        
+        // 根据状态改变颜色
+        if (this.state === 'attack') {
+            ctx.fillStyle = '#ff6666';
+        } else if (this.state === 'return') {
+            ctx.fillStyle = '#ffff66';
+        } else {
+            ctx.fillStyle = '#66ff66';
+        }
+        
+        ctx.fill();
+        ctx.restore();
+        
+        // 燃料条
+        const fuelPercent = this.fuel / 600;
+        const barWidth = 8 * camera.zoom;
+        const barHeight = 1 * camera.zoom;
+        const barX = screenX - barWidth/2;
+        const barY = screenY + size + 2 * camera.zoom;
+        
+        ctx.fillStyle = '#333';
+        ctx.fillRect(barX, barY, barWidth, barHeight);
+        ctx.fillStyle = fuelPercent > 0.3 ? '#0099ff' : '#ff9900';
+        ctx.fillRect(barX, barY, barWidth * fuelPercent, barHeight);
+    }
+    
+    isOffscreen() {
+        return this.health <= 0 || this.fuel <= 0;
     }
 }
