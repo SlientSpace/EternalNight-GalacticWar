@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>2D 宇宙舰队战争（武器更新：激光/动能/导弹战斗部）</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body class="bg-gray-900 text-gray-100 flex flex-col items-center justify-center min-h-screen p-4">
+    <div class="text-center mb-6">
+        <h1 class="text-3xl sm:text-4xl font-bold mb-2">2D 宇宙舰队战争：宏大地图（武器系统更新）</h1>
+        <p class="text-gray-400">新增：激光分为脉冲激光 & 持续激光；动能武器拆分为 连发能量弹 / 近防武器 / 线圈炮；导弹增加战斗部属性（纯动能 / 穿甲 / 高爆 / 核）。</p>
+        <p class="text-gray-400 mt-2">双击舰船追踪，按 O 接管，WASD 控制，空格 射击。</p>
+    </div>
+
+    <canvas id="beeCanvas"></canvas>
+
+    <div id="shipInfoPanel" aria-hidden="true">
+        <h3 id="shipInfoTitle">舰船信息</h3>
+        <div id="shipInfoBody">
+            <div><strong>舰队：</strong><span id="infoFleet"></span></div>
+            <div><strong>类型：</strong><span id="infoType"></span></div>
+            <div><strong>状态：</strong><span id="infoState"></span></div>
+            <div><strong>生命：</strong><span id="infoHealth"></span></div>
+            <div><strong>速度：</strong><span id="infoSpeed"></span></div>
+            <div style="margin-top:8px;"><strong>武器：</strong></div>
+            <div id="weaponsList" style="margin-top:6px;"></div>
+        </div>
+    </div>
+
+    <!-- 主脚本（ES modules） -->
+    <script type="module" src="./src/main.js"></script>
+</body>
+</html>

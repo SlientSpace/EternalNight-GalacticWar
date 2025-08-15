@@ -1,0 +1,65 @@
+/* 基本样式（从原文件复制并略微整理） */
+body {
+    font-family: 'Inter', sans-serif;
+    background-color: #1a202c;
+    color: #e2e8f0;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+}
+canvas {
+    display: block;
+    border: 2px solid #4a5568;
+    background-color: #0b0c10;
+    border-radius: 0.5rem;
+    cursor: grab;
+}
+canvas.grabbing {
+    cursor: grabbing;
+}
+
+/* 舰船信息面板 */
+#shipInfoPanel {
+    position: absolute;
+    right: 20px;
+    top: 90px;
+    width: 360px;
+    background: rgba(10,12,18,0.9);
+    border: 1px solid rgba(255,255,255,0.06);
+    padding: 12px;
+    border-radius: 8px;
+    color: #e6edf3;
+    font-size: 13px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
+    display: none;
+    z-index: 10;
+}
+#shipInfoPanel h3 {
+    margin: 0 0 6px 0;
+    font-size: 16px;
+    color: #ffd080;
+}
+.weapon-row {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    gap:8px;
+    margin-bottom:6px;
+}
+.weapon-name { font-weight:600; }
+.cooldown-bar {
+    height:6px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 6px;
+    overflow: hidden;
+    flex:1;
+}
+.cooldown-bar > i {
+    display:block;
+    height:100%;
+    width:0%;
+    background: linear-gradient(90deg, rgba(255,200,50,0.9), rgba(255,120,40,0.9));
+}
