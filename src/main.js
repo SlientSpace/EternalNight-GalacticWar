@@ -90,6 +90,7 @@ canvas.addEventListener('wheel', (e) => {
     camera.y = worldY - mouseY / camera.zoom;
 });
 
+
 canvas.addEventListener('dblclick', (e) => {
     if (camera.manualControl) return;
     const rect = canvas.getBoundingClientRect();
@@ -145,6 +146,150 @@ canvas.addEventListener('click', (e) => {
     }
 
 });
+
+let lastTouchX = 0;
+let lastTouchY = 0;
+let lastTap = 0; // 用于双击检测
+
+// 双指缩放状态
+let isPinching = false;
+let initialDistance = 0;
+let initialZoom = 0;
+
+canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    camera.trackedShip = null;
+    updateTrackingDisplay();
+
+    // 单指平移
+    if (e.touches.length === 1) {
+        if (camera.manualControl) {
+            // 在手动模式下，单击可能用于选择目标，这里不进行拖动
+            return;
+        }
+        isDragging = true;
+        canvas.classList.add('grabbing');
+        lastTouchX = e.touches[0].clientX;
+        lastTouchY = e.touches[0].clientY;
+    } 
+    // 双指缩放
+    else if (e.touches.length === 2) {
+        isPinching = true;
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        initialDistance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+        initialZoom = camera.zoom;
+    }
+});
+
+canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+
+    // 单指平移
+    if (isDragging && e.touches.length === 1) {
+        const dx = e.touches[0].clientX - lastTouchX;
+        const dy = e.touches[0].clientY - lastTouchY;
+        camera.x -= dx / camera.zoom;
+        camera.y -= dy / camera.zoom;
+        lastTouchX = e.touches[0].clientX;
+        lastTouchY = e.touches[0].clientY;
+    } 
+    // 双指缩放
+    else if (isPinching && e.touches.length === 2) {
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        const currentDistance = Math.hypot(touch2.clientX - touch1.clientX, touch2.clientY - touch1.clientY);
+        
+        // 计算缩放中心
+        const rect = canvas.getBoundingClientRect();
+        const centerX = (touch1.clientX + touch2.clientX) / 2 - rect.left;
+        const centerY = (touch1.clientY + touch2.clientY) / 2 - rect.top;
+
+        const worldX = camera.x + centerX / camera.zoom;
+        const worldY = camera.y + centerY / camera.zoom;
+        
+        // 计算新的缩放级别
+        let newZoom = initialZoom * (currentDistance / initialDistance);
+        newZoom = Math.max(MIN_ZOOM, Math.min(newZoom, MAX_ZOOM));
+        camera.zoom = newZoom;
+
+        // 保持缩放中心不变
+        camera.x = worldX - centerX / camera.zoom;
+        camera.y = worldY - centerY / camera.zoom;
+    }
+});
+
+canvas.addEventListener('touchend', (e) => {
+    e.preventDefault();
+
+    // 重置状态
+    isDragging = false;
+    isPinching = false;
+    canvas.classList.remove('grabbing');
+
+    // 处理单指点击和双击
+    // 如果没有触摸点，并且之前的操作不是缩放，则进行点击/双击检测
+    if (e.touches.length === 0) {
+        const now = Date.now();
+        const deltaT = now - lastTap;
+        
+        // 双击
+        if (deltaT < 300) {
+            // 触发双击逻辑
+            handleTap(e, true);
+        } else {
+            // 单击
+            // 使用 setTimeout 延迟执行，以便有时间检测双击
+            setTimeout(() => {
+                const now_check = Date.now();
+                if (now_check - now > 250) { // 如果在250ms内没有第二次点击，则认为是单次点击
+                    handleTap(e, false);
+                }
+            }, 300);
+        }
+        lastTap = now;
+    }
+});
+
+// 处理点击和双击的函数
+function handleTap(e, isDoubleClick) {
+    const rect = canvas.getBoundingClientRect();
+    const touchX = e.changedTouches[0].clientX - rect.left;
+    const touchY = e.changedTouches[0].clientY - rect.top;
+    const worldX = camera.x + touchX / camera.zoom;
+    const worldY = camera.y + touchY / camera.zoom;
+
+    let found = null;
+    for (const s of ships) {
+        if (s.health <= 0) continue;
+        const dx = Math.abs(s.position.x - worldX);
+        const dy = Math.abs(s.position.y - worldY);
+        const wrapDx = Math.min(dx, GAME_WORLD_WIDTH - dx);
+        const wrapDy = Math.min(dy, GAME_WORLD_HEIGHT - dy);
+        const dist = Math.sqrt(wrapDx * wrapDx + wrapDy * wrapDy);
+        if (dist < (SHIP_SIZE * 3)) {
+            found = s;
+            break;
+        }
+    }
+
+    if (isDoubleClick) {
+        // 双击逻辑
+        if (!camera.manualControl) {
+            camera.trackedShip = found || null;
+            updateTrackingDisplay();
+        }
+    } else {
+        // 单击逻辑
+        if (camera.manualControl) {
+            if (found && camera.trackedShip && found.fleet !== camera.trackedShip.fleet) {
+                camera.trackedShip.manualTarget = found;
+                createExplosion(found.position.x, found.position.y, particleColors[found.fleet]);
+                found._selectedAt = performance.now();
+            }
+        }
+    }
+}
 
 // 控制输入
 const controlInputs = { up:false, down:false, left:false, right:false, fire:false };
@@ -339,12 +484,11 @@ function updateManualDisplay() {
                 autoAntiMissile: !!s.autoAntiMissile,
                 autoAntiDrone: !!s.autoAntiDrone
             },
-            // optional: label snapshot to detect name changes
             weaponNames: (s.weapons || []).slice()
         };
     }
 
-    // --- 注入样式（只注入一次） ---
+    // --- styles (once) ---
     if (!document.getElementById('manualDisplayStyles')) {
         const style = document.createElement('style');
         style.id = 'manualDisplayStyles';
@@ -366,9 +510,10 @@ function updateManualDisplay() {
                 color: #ddd;
                 min-width: 260px;
             }
-            .manual-display .title { color:#ffb000; font-weight:700; margin-bottom:6px; font-size:15px; }
+            .manual-display .title { color:#ffb000; font-weight:700; font-size:15px; }
             .manual-display .line { font-size:12px; color:#bbb; margin-bottom:4px; }
             .manual-display .small { font-size:11px; color:#999; margin-top:8px; }
+            .header-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; }
             .options-row { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
             .option-btn {
                 padding:6px 8px;
@@ -409,28 +554,62 @@ function updateManualDisplay() {
             }
             .weapon-list::-webkit-scrollbar { width:8px; height:8px; }
             .weapon-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius:4px; }
+            /* 新的接管切换按钮（两种状态共用） */
+            .takeover-toggle {
+                padding:6px 10px;
+                border-radius:8px;
+                border:1px solid rgba(255,255,255,0.10);
+                font-weight:700;
+                font-size:13px;
+                cursor:pointer;
+                user-select:none;
+                transition: filter .12s;
+            }
+            .takeover-toggle:hover { filter: brightness(1.05); }
+            .takeover-toggle.on {
+                background: linear-gradient(180deg, rgba(240,80,80,0.95), rgba(210,60,60,0.95));
+                color:#2b0f0f;
+                box-shadow: 0 6px 16px rgba(210,60,60,0.25), inset 0 -1px rgba(0,0,0,0.1);
+            }
+            .takeover-toggle.off {
+                background: linear-gradient(180deg, rgba(40,120,255,0.95), rgba(30,90,220,0.95));
+                color:#0b1320;
+                box-shadow: 0 6px 16px rgba(30,90,220,0.25), inset 0 -1px rgba(0,0,0,0.1);
+            }
+            .takeover-toggle:disabled {
+                opacity:.5; cursor:not-allowed; filter:none;
+            }
         `;
         document.head.appendChild(style);
     }
 
-    // --- 容器（只建一次） ---
+    // --- container (once) ---
     let el = document.getElementById('manualDisplay');
     if (!el) {
         el = document.createElement('div');
         el.id = 'manualDisplay';
         el.className = 'manual-display';
         document.body.appendChild(el);
-        // init refs and last snapshot
         el._refs = null;
         el._lastSnapshot = null;
         el._forceRefresh = false;
     }
 
-    // --- 一次性键盘绑定（保留 F/B/M/N 和数字键） ---
+    // --- shortcut keys (once) ---
     if (!document._manualDisplayKeybindsAdded) {
         document._manualDisplayKeybindsAdded = true;
         document.addEventListener('keydown', (ev) => {
             const key = (ev.key || '').toLowerCase();
+            // 新增 O 键作为接管切换
+            if (key === 'o') {
+                if (camera.trackedShip && camera.trackedShip.health > 0) {
+                    camera.manualControl = !camera.manualControl;
+                    try { isDragging = false; canvas.classList.remove('grabbing'); } catch (e) {}
+                    updateManualDisplay();
+                    ev.preventDefault();
+                    return;
+                }
+            }
             if (!camera.manualControl || !camera.trackedShip) return;
             const s = camera.trackedShip;
             if (!s) return;
@@ -469,7 +648,7 @@ function updateManualDisplay() {
         }, { capture: true });
     }
 
-    // --- 强制刷新接口（外部可以调用 window.manualDisplayForceRefresh()） ---
+    // --- external force refresh ---
     window.manualDisplayForceRefresh = function () {
         const e = document.getElementById('manualDisplay');
         if (!e) return;
@@ -478,15 +657,16 @@ function updateManualDisplay() {
     };
 
     // --- display logic ---
-    if (!(camera.manualControl && camera.trackedShip)) {
-        // 未接管：清空并显示提示（只更新文本）
+    // 如果没有追踪目标，显示未追踪并禁用切换按钮
+    if (!camera.trackedShip) {
         el.innerHTML = '';
-        const line = document.createElement('div');
-        line.className = 'line';
-        line.style.color = '#e2e8f0';
-        line.textContent = '未接管';
-        el.appendChild(line);
-        el._refs = null;
+        const header = document.createElement('div'); header.className = 'header-row';
+        const title = document.createElement('div'); title.className = 'title'; title.textContent = '未追踪';
+        const tbtn = document.createElement('button'); tbtn.className = 'takeover-toggle off'; tbtn.textContent = '接管';
+        tbtn.disabled = true;
+        header.appendChild(title); header.appendChild(tbtn);
+        el.appendChild(header);
+        el._refs = { title, takeoverBtn: tbtn };
         el._lastSnapshot = null;
         el._forceRefresh = false;
         return;
@@ -499,12 +679,11 @@ function updateManualDisplay() {
         s.weaponEnabled = new Array(s.weapons.length).fill(true);
     }
 
-    // build current snapshot
+    // snapshot for rebuild decision
     const curSnap = snapshotForShip(s);
     const last = el._lastSnapshot;
     const force = !!el._forceRefresh;
 
-    // decide if need full rebuild:
     const needFullRebuild =
         force ||
         !el._refs ||
@@ -515,79 +694,128 @@ function updateManualDisplay() {
         last.options.autoAntiShip !== curSnap.options.autoAntiShip ||
         last.options.autoAntiMissile !== curSnap.options.autoAntiMissile ||
         last.options.autoAntiDrone !== curSnap.options.autoAntiDrone ||
-        // also rebuild if weapon names changed
         JSON.stringify(last.weaponNames) !== JSON.stringify(curSnap.weaponNames);
 
-    // update textual lines always (cheap)
-    const targetTxt = s.manualTarget && s.manualTarget.health > 0 ? `${s.manualTarget.typeLabel || '目标'} (${s.manualTarget.fleet})` : '无目标';
-    // If refs exist we can update them in-place; otherwise we'll reconstruct them below
+    const targetTxt = s.manualTarget && s.manualTarget.health > 0
+        ? `${s.manualTarget.typeLabel || '目标'} (${s.manualTarget.fleet})` : '无目标';
+
+    // ---------- partial update ----------
     if (!needFullRebuild && el._refs) {
-        // update header text
-        el._refs.title.textContent = '接管中';
-        el._refs.lineTarget.textContent = `目标: ${targetTxt}`;
-        el._refs.lineFcs.textContent = `火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
-        el._refs.linePd.textContent = `点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
-        el._refs.hint.textContent = '提示: WSAD 控制，空格开火，单击敌舰设为目标（快捷键：F/B/M/N，数字键 1.. 用于武器）';
-
-        // sync option buttons' classes and text
-        const optBtns = el._refs.optionsRow.querySelectorAll('.option-btn');
-        optBtns.forEach(btn => {
-            const opt = btn.dataset.opt;
-            if (opt === 'fcs') {
-                if (s.fireControlOverride) btn.classList.add('on'); else btn.classList.remove('on');
-                btn.textContent = `火控 (${s.fireControlOverride ? '已解锁' : '限制中'})`;
-            } else if (opt === 'antiShip') {
-                if (s.autoAntiShip) btn.classList.add('on'); else btn.classList.remove('on');
-                btn.textContent = `反舰 (${s.autoAntiShip ? '开' : '关'})`;
-            } else if (opt === 'pdMissile') {
-                if (s.autoAntiMissile) btn.classList.add('on'); else btn.classList.remove('on');
-                btn.textContent = `点防导弹 (${s.autoAntiMissile ? '开' : '关'})`;
-            } else if (opt === 'pdDrone') {
-                if (s.autoAntiDrone) btn.classList.add('on'); else btn.classList.remove('on');
-                btn.textContent = `点防无人机 (${s.autoAntiDrone ? '开' : '关'})`;
-            }
-        });
-
-        // sync weapon buttons (no rebuild)
-        const rows = el._refs.weaponList.querySelectorAll('.weapon-row');
-        rows.forEach(row => {
-            const idx = Number(row.dataset.index);
-            const btn = row.querySelector('.weapon-btn');
-            const label = row.querySelector('.weapon-label');
-            if (!btn || !label) return;
-            const shouldOn = !!s.weaponEnabled[idx];
-            if (shouldOn) {
-                btn.classList.add('on');
-                btn.textContent = '启用';
+        // 顶部标题与接管切换按钮
+        el._refs.title.textContent = camera.manualControl ? '接管中' : '未接管';
+        const tbtn = el._refs.takeoverBtn;
+        if (tbtn) {
+            tbtn.disabled = !(camera.trackedShip && camera.trackedShip.health > 0);
+            tbtn.classList.remove('on', 'off');
+            if (camera.manualControl) {
+                tbtn.classList.add('on');
+                tbtn.textContent = '解除接管 (O)';
+                tbtn.title = '解除接管 (O)';
             } else {
-                btn.classList.remove('on');
-                btn.textContent = '禁用';
+                tbtn.classList.add('off');
+                tbtn.textContent = '接管 (O)';
+                tbtn.title = '接管 (O)';
             }
-            // update label in case name changed
-            label.textContent = `${idx+1}: ${s.weapons[idx]}${s.weaponWarheads && s.weaponWarheads[idx] ? `[${s.weaponWarheads[idx]}]` : ''}`;
-        });
+        }
 
-        // clear force flag and update last snapshot
+        // 文本
+        if (el._refs.lineTarget) el._refs.lineTarget.textContent = `目标: ${targetTxt}`;
+        if (el._refs.lineFcs) el._refs.lineFcs.textContent = `火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
+        if (el._refs.linePd)  el._refs.linePd.textContent  = `点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
+        if (el._refs.hint)     el._refs.hint.textContent     = '提示: WSAD 控制，空格开火，单击敌舰设为目标（快捷键：O/F/B/M/N，数字键 1.. 用于武器）';
+
+        // 选项按钮状态
+        if (el._refs.optionsRow) {
+            const optBtns = el._refs.optionsRow.querySelectorAll('.option-btn');
+            optBtns.forEach(btn => {
+                const opt = btn.dataset.opt;
+                if (opt === 'fcs') {
+                    btn.classList.toggle('on', !!s.fireControlOverride);
+                    btn.textContent = `火控 (${s.fireControlOverride ? '已解锁' : '限制中'})`;
+                } else if (opt === 'antiShip') {
+                    btn.classList.toggle('on', !!s.autoAntiShip);
+                    btn.textContent = `反舰 (${s.autoAntiShip ? '开' : '关'})`;
+                } else if (opt === 'pdMissile') {
+                    btn.classList.toggle('on', !!s.autoAntiMissile);
+                    btn.textContent = `点防导弹 (${s.autoAntiMissile ? '开' : '关'})`;
+                } else if (opt === 'pdDrone') {
+                    btn.classList.toggle('on', !!s.autoAntiDrone);
+                    btn.textContent = `点防无人机 (${s.autoAntiDrone ? '开' : '关'})`;
+                }
+            });
+        }
+
+        // 武器按钮
+        if (el._refs.weaponList) {
+            const rows = el._refs.weaponList.querySelectorAll('.weapon-row');
+            rows.forEach(row => {
+                const idx = Number(row.dataset.index);
+                const btn = row.querySelector('.weapon-btn');
+                const label = row.querySelector('.weapon-label');
+                if (!btn || !label) return;
+                const on = !!s.weaponEnabled[idx];
+                btn.classList.toggle('on', on);
+                btn.textContent = on ? '启用' : '禁用';
+                label.textContent = `${idx+1}: ${s.weapons[idx]}${s.weaponWarheads && s.weaponWarheads[idx] ? `[${s.weaponWarheads[idx]}]` : ''}`;
+            });
+        }
+
         el._forceRefresh = false;
         el._lastSnapshot = curSnap;
         return;
     }
 
-    // --- Full rebuild (only when needed or forced) ---
+    // ---------- full rebuild ----------
     el.innerHTML = '';
 
-    // header
-    const title = document.createElement('div'); title.className = 'title'; title.textContent = '接管中';
+    // Header: 标题 + 接管切换按钮（两种状态皆存在）
+    const headerRow = document.createElement('div'); headerRow.className = 'header-row';
+    const title = document.createElement('div'); title.className = 'title';
+    title.textContent = camera.manualControl ? '接管中' : '未接管';
+
+    const takeoverBtn = document.createElement('button');
+    takeoverBtn.type = 'button';
+    takeoverBtn.className = 'takeover-toggle ' + (camera.manualControl ? 'on' : 'off');
+    takeoverBtn.textContent = camera.manualControl ? '解除接管 (O)' : '接管 (O)';
+    takeoverBtn.title = camera.manualControl ? '解除接管 (O)' : '接管 (O)';
+    takeoverBtn.disabled = !(camera.trackedShip && camera.trackedShip.health > 0);
+    takeoverBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation(); ev.preventDefault();
+        if (!(camera.trackedShip && camera.trackedShip.health > 0)) return;
+        camera.manualControl = !camera.manualControl;
+        try { isDragging = false; canvas.classList.remove('grabbing'); } catch (e) {}
+        updateManualDisplay();
+    });
+
+    headerRow.appendChild(title);
+    headerRow.appendChild(takeoverBtn);
+    el.appendChild(headerRow);
+
+    // 如果未接管，显示简要信息后返回（仍保留接管按钮）
+    if (!camera.manualControl) {
+        const line = document.createElement('div'); line.className = 'line'; line.style.color = '#e2e8f0';
+        line.textContent = '未接管';
+        el.appendChild(line);
+        const tip = document.createElement('div'); tip.className = 'small';
+        tip.textContent = '提示: 点右侧按钮或按 O 键接管。';
+        el.appendChild(tip);
+
+        el._refs = { title, takeoverBtn };
+        el._lastSnapshot = curSnap; // 保存快照也行
+        el._forceRefresh = false;
+        return;
+    }
+
+    // 已接管：其余 UI
     const lineTarget = document.createElement('div'); lineTarget.className = 'line'; lineTarget.textContent = `🎯 目标: ${targetTxt}`;
     const lineFcs = document.createElement('div'); lineFcs.className = 'line'; lineFcs.textContent = `⚙️ 火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
     const linePd = document.createElement('div'); linePd.className = 'line'; linePd.textContent = `🛡️ 点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
 
-    el.appendChild(title);
     el.appendChild(lineTarget);
     el.appendChild(lineFcs);
     el.appendChild(linePd);
 
-    // options buttons (rebuild)
+    // options buttons
     const optionsRow = document.createElement('div'); optionsRow.className = 'options-row';
     function makeOptionBtn(idSuffix, text, isOn, handler) {
         const btn = document.createElement('button');
@@ -598,7 +826,6 @@ function updateManualDisplay() {
         btn.addEventListener('click', function(ev) {
             ev.stopPropagation(); ev.preventDefault();
             handler();
-            // after change, update (partial update will detect change)
             updateManualDisplay();
         });
         return btn;
@@ -614,7 +841,7 @@ function updateManualDisplay() {
     optionsRow.appendChild(btnPdDrone);
     el.appendChild(optionsRow);
 
-    // weapons (rebuild)
+    // weapons
     const weaponList = document.createElement('div'); weaponList.className = 'weapon-list';
     for (let i = 0; i < s.weapons.length; i++) {
         const row = document.createElement('div'); row.className = 'weapon-row'; row.dataset.index = i;
@@ -642,16 +869,26 @@ function updateManualDisplay() {
 
     // hint
     const hint = document.createElement('div'); hint.className = 'small';
-    hint.textContent = '提示: WSAD 控制，空格开火，单击敌舰设为目标（快捷键：F/B/M/N，数字键 1.. 用于武器）';
+    hint.textContent = '提示: WSAD 控制，空格开火，单击敌舰设为目标（快捷键：O/F/B/M/N，数字键 1.. 用于武器）';
     el.appendChild(hint);
 
-    // save refs & snapshot, clear force flag
+    // refs & snapshot
     el._refs = {
-        title, lineTarget, lineFcs, linePd, optionsRow, weaponList, hint
+        title,
+        takeoverBtn,
+        lineTarget,
+        lineFcs,
+        linePd,
+        optionsRow,
+        weaponList,
+        hint
     };
     el._lastSnapshot = curSnap;
     el._forceRefresh = false;
 }
+
+
+
 // 初始化舰艇
 function initShips() {
     ships = [];
@@ -671,6 +908,8 @@ function initShips() {
         ships.push(s);
     }
 }
+
+
 initShips();
 // 暴露全局数组以供舰船自用逻辑访问（仅用于本地演示）
 window.__allShips = window.__allShips || [];
@@ -785,7 +1024,7 @@ function updateTimeScaleDisplay() {
             ev.stopPropagation(); ev.preventDefault();
             // 避免浮点误差：用整数运算（*10）
             let v = Math.round((timeScale * 10)) / 10;
-            v = Math.max(0.1, Math.round((v - 0.1) * 10) / 10);
+            v = Math.max(0, Math.round((v - 0.1) * 10) / 10);
             // clamp to 1 decimal
             timeScale = Math.round(v * 10) / 10;
             updateTimeScaleDisplay();
