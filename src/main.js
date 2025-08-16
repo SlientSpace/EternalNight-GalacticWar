@@ -22,7 +22,7 @@ let respawnCooldown2 = RESPAWN_TIME;
 const camera = { x: 0, y: 0, zoom: 1, trackedShip: null, manualControl: false };
 window.camera = camera;
 const MIN_ZOOM = 0.1;
-const MAX_ZOOM = 4;
+const MAX_ZOOM = 8;
 let timeScale = 1;
 
 function resizeCanvas() {
@@ -229,13 +229,15 @@ function updateTrackingDisplay() {
     let el = document.getElementById('trackingDisplay');
     if (!el) {
         el = document.createElement('div'); el.id = 'trackingDisplay';
-        el.style.position = 'absolute'; el.style.left = '20px'; el.style.top = '20px'; el.style.zIndex = 11;
+        el.style.position = 'fixed'; el.style.left = '20px'; el.style.top = '20px'; el.style.zIndex = 1000;
+        el.style.pointerEvents = 'auto';
         el.style.fontFamily = 'monospace';
         el.style.fontSize = '14px';
         el.style.padding = '6px 10px';
         el.style.backgroundColor = 'rgba(0,0,0,0.7)';
         el.style.borderRadius = '4px';
         el.style.border = '1px solid rgba(255,255,255,0.2)';
+        el.style.minWidth = '300px';
         document.body.appendChild(el);
     }
     if (camera.trackedShip) {
@@ -252,74 +254,350 @@ function updateTrackingDisplay() {
         const avgFuelPct = (s.drones && s.drones.length>0) ? Math.round(s.drones.reduce((acc,d)=>acc + (d.fuel||0),0) / (600 * s.drones.length) * 100) : 0;
         const readyMissileIdx = s.weapons.findIndex(w=>w===WEAPON_MISSILE);
         const warheadTxt = (readyMissileIdx!==-1 && s.weaponWarheads && s.weaponWarheads[readyMissileIdx]) ? s.weaponWarheads[readyMissileIdx] : '—';
+        
+        // 构建武器信息
+        let weaponsHtml = '';
+        for (let i=0;i<s.weapons.length;i++){
+            const name = s.weapons[i];
+            const props = weaponProps[name];
+            const cooldown = s.shootCooldowns[i];
+            const percent = props.cooldown ? Math.max(0, Math.min(100, (cooldown/props.cooldown)*100)) : 0;
+            const warhead = s.weaponWarheads[i];
+            const weaponLabel = warhead ? `${name}[${warhead}]` : name;
+            const barWidth = Math.round(percent / 5); // 每5%一个字符，共20个字符宽度
+            const bar = '█'.repeat(barWidth) + '░'.repeat(20 - barWidth);
+            weaponsHtml += `<div style="color:#ddd;font-size:11px;margin:2px 0;">
+                ${i+1}.${weaponLabel} (${props.damage}dmg/${props.range}r) [${bar}] ${Math.round(cooldown)}
+            </div>`;
+        }
+        
         el.innerHTML = `
             <div style="color: ${fleetColors[s.fleet]}; font-weight: bold;">追踪: 舰队 ${s.fleet} ${s.typeLabel}</div>
             <div style="color: #ccc; font-size: 12px;">状态: ${s.state} | 生命值: ${healthPercent}%</div>
             <div style="color: #aaa; font-size: 11px;">${pos} | ${vel}</div>
             <div style="color:#9fe; font-size: 11px;">能量: ${energyPercent}% (${Math.round(s.energy)}/${s.maxEnergy}) | 热量: ${heatPercent}% (${Math.round(s.heat)}/${s.maxHeat}) | ΔV: ${dvPercent}% (${Math.round(s.deltaV)}/${s.maxDeltaV})</div>
             <div style="color:#c9f; font-size: 11px;">电子战: ${empActive} | ${jam} | 无人机: ${droneCount}/3${droneCount>0?` (平均燃料${avgFuelPct}%)`:''} | 战斗部: ${warheadTxt}</div>
+            <div style="color:#ff0; font-size:12px; margin:4px 0 2px 0; font-weight:bold;">武器系统:</div>
+            ${weaponsHtml}
         `;
     } else {
         el.innerHTML = `<div style="color: #e2e8f0;">未追踪</div>`;
     }
 }
 function updateManualDisplay() {
+    // --- 注入样式（只注入一次） ---
+    if (!document.getElementById('manualDisplayStyles')) {
+        const style = document.createElement('style');
+        style.id = 'manualDisplayStyles';
+        style.textContent = `
+            .manual-display {
+                position: fixed;
+                left: 20px;
+                top: 90px;
+                z-index: 1000;
+                pointer-events: auto;
+                font-family: monospace;
+                font-size: 14px;
+                padding: 12px 14px;
+                background: rgba(18,20,30,0.72);
+                backdrop-filter: blur(6px);
+                border-radius: 10px;
+                border: 1px solid rgba(255,255,255,0.10);
+                box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+                color: #ddd;
+                min-width: 260px;
+            }
+            .manual-display .title { color:#ffb000; font-weight:700; margin-bottom:6px; font-size:15px; }
+            .manual-display .line { font-size:12px; color:#bbb; margin-bottom:4px; }
+            .manual-display .small { font-size:11px; color:#999; margin-top:8px; }
+            .options-row { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
+            .option-btn {
+                padding:6px 8px;
+                border-radius:8px;
+                border:1px solid rgba(255,255,255,0.06);
+                background: rgba(80,80,80,0.12);
+                color:#e6eef6;
+                font-size:13px;
+                cursor:pointer;
+                transition: all .14s;
+                user-select:none;
+            }
+            .option-btn.on {
+                background: linear-gradient(180deg, rgba(0,200,120,0.95), rgba(0,160,100,0.95));
+                color:#042613;
+                box-shadow: 0 4px 10px rgba(0,160,100,0.14), inset 0 -1px rgba(0,0,0,0.08);
+            }
+            .weapon-list { margin-top:10px; display:flex; flex-direction:column; gap:8px; max-height:240px; overflow:auto; padding-right:4px; }
+            .weapon-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 2px; }
+            .weapon-label { color:#e6eef6; font-size:13px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; max-width:160px; }
+            .weapon-btn {
+                padding:5px 8px;
+                border-radius:6px;
+                border:1px solid rgba(255,255,255,0.06);
+                background: rgba(100,100,100,0.12);
+                color:#e6eef6;
+                font-size:13px;
+                cursor:pointer;
+                transition: all .14s;
+                user-select:none;
+                min-width:54px;
+                text-align:center;
+            }
+            .weapon-btn.on {
+                background: rgba(0,180,100,0.92);
+                color:#042613;
+                box-shadow: 0 3px 8px rgba(0,160,90,0.12);
+            }
+            .weapon-list::-webkit-scrollbar { width:8px; height:8px; }
+            .weapon-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius:4px; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // --- 创建或获取容器（只创建一次） ---
     let el = document.getElementById('manualDisplay');
     if (!el) {
-        el = document.createElement('div'); el.id = 'manualDisplay';
-        el.style.position = 'absolute'; el.style.left = '20px'; el.style.top = '90px'; el.style.zIndex = 11;
-        el.style.fontFamily = 'monospace';
-        el.style.fontSize = '14px';
-        el.style.padding = '6px 10px';
-        el.style.backgroundColor = 'rgba(0,0,0,0.7)';
-        el.style.borderRadius = '4px';
-        el.style.border = '1px solid rgba(255,255,255,0.2)';
+        el = document.createElement('div');
+        el.id = 'manualDisplay';
+        el.className = 'manual-display';
+
+        const title = document.createElement('div'); title.className = 'title';
+        const lineTarget = document.createElement('div'); lineTarget.className = 'line'; lineTarget.id = 'md_target';
+        const lineFcs = document.createElement('div'); lineFcs.className = 'line'; lineFcs.id = 'md_fcs';
+        const linePd = document.createElement('div'); linePd.className = 'line'; linePd.id = 'md_pd';
+
+        // options container (buttons for 火控/反舰/导弹/无人机)
+        const optionsRow = document.createElement('div'); optionsRow.className = 'options-row'; optionsRow.id = 'md_options';
+
+        // weapon list
+        const weaponList = document.createElement('div'); weaponList.className = 'weapon-list'; weaponList.id = 'md_weaponList';
+
+        const hint = document.createElement('div'); hint.className = 'small'; hint.id = 'md_hint';
+
+        el.appendChild(title);
+        el.appendChild(lineTarget);
+        el.appendChild(lineFcs);
+        el.appendChild(linePd);
+        el.appendChild(optionsRow);
+        el.appendChild(weaponList);
+        el.appendChild(hint);
+
+        // store refs to avoid lookups
+        el._refs = { title, lineTarget, lineFcs, linePd, optionsRow, weaponList, hint, shipRef: null };
+
         document.body.appendChild(el);
     }
+
+    const refs = el._refs;
+
+    // --- 添加一次性键盘绑定（保留并增强原有快捷键 F/B/M/N） ---
+    if (!document._manualDisplayKeybindsAdded) {
+        document._manualDisplayKeybindsAdded = true;
+        document.addEventListener('keydown', (ev) => {
+            const key = (ev.key || '').toLowerCase();
+            if (!camera.manualControl || !camera.trackedShip) return; // 仅当接管时生效
+            const s = camera.trackedShip;
+            if (!s) return;
+            if (key === 'f') { // 火控开关（已解锁/限制中）
+                s.fireControlOverride = !s.fireControlOverride;
+                updateManualDisplay();
+                ev.preventDefault();
+            } else if (key === 'b') { // 反舰
+                s.autoAntiShip = !s.autoAntiShip;
+                updateManualDisplay();
+                ev.preventDefault();
+            } else if (key === 'm') { // 点防导弹
+                s.autoAntiMissile = !s.autoAntiMissile;
+                updateManualDisplay();
+                ev.preventDefault();
+            } else if (key === 'n') { // 点防无人机
+                s.autoAntiDrone = !s.autoAntiDrone;
+                updateManualDisplay();
+                ev.preventDefault();
+            }
+        }, { capture: true });
+    }
+
+    // --- 如果接管并有追踪飞船，显示详细 HUD ---
     if (camera.manualControl && camera.trackedShip) {
         const s = camera.trackedShip;
+
+        // ensure weaponEnabled exists
+        if (!s.weaponEnabled || s.weaponEnabled.length !== s.weapons.length) {
+            s.weaponEnabled = new Array(s.weapons.length).fill(true);
+        }
+
+        // update header lines
+        refs.title.textContent = '接管中';
         const targetTxt = s.manualTarget && s.manualTarget.health > 0 ? `${s.manualTarget.typeLabel || '目标'} (${s.manualTarget.fleet})` : '无目标';
-        const fcs = s.fireControlOverride ? '已解锁' : '限制中';
+        refs.lineTarget.textContent = `🎯 目标: ${targetTxt}`;
+        const fcsText = s.fireControlOverride ? '已解锁' : '限制中';
+        const antiShipText = s.autoAntiShip ? '开' : '关';
+        refs.lineFcs.textContent = `⚙️ 火控: ${fcsText} (F) | 反舰: ${antiShipText} (B)`;
         const pdMissile = s.autoAntiMissile ? '开' : '关';
         const pdDrone = s.autoAntiDrone ? '开' : '关';
-        const antiShip = s.autoAntiShip ? '开' : '关';
+        refs.linePd.textContent = `🛡️ 点防: 导弹 ${pdMissile} (M) | 无人机 ${pdDrone} (N)`;
+        refs.hint.textContent = '提示: WSAD 控制，空格开火，单击敌舰设为目标';
 
-        let html = `
-            <div style="color:#ffb000;font-weight:bold;">接管中</div>
-            <div style="color:#bbb;font-size:12px;">目标: ${targetTxt}</div>
-            <div style="color:#9fe;font-size:12px;">火控: ${fcs} (F) | 反舰: ${antiShip} (B)</div>
-            <div style="color:#9fe;font-size:12px;">点防: 反导弹 ${pdMissile} (M) | 反无人机 ${pdDrone} (N)</div>
-            <div id="weaponToggles" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:6px;"></div>
-            <div style="color:#999;font-size:11px;">提示: WSAD 控制，空格开火，单击敌舰设为目标</div>`;
-        
-        el.innerHTML = html;
+        // --- Options buttons: rebuild if ship changed ---
+        const needRebuildOptions = (refs.shipRef !== s);
+        if (needRebuildOptions) {
+            refs.shipRef = s;
+            refs.optionsRow.innerHTML = '';
 
-        // 渲染武器开关按钮
-        const wt = document.getElementById('weaponToggles');
-        wt.innerHTML = '';
-        for (let i=0;i<s.weapons.length;i++){
-            const name = s.weapons[i];
-            const enabled = (s.weaponEnabled && s.weaponEnabled[i] !== false);
-            const btn = document.createElement('button');
-            btn.textContent = `${i+1}:${name}${s.weaponWarheads[i]?`[${s.weaponWarheads[i]}]`:''}`;
-            btn.style.padding = '2px 6px';
-            btn.style.fontSize = '12px';
-            btn.style.borderRadius = '3px';
-            btn.style.border = '1px solid rgba(255,255,255,0.2)';
-            btn.style.background = enabled ? 'rgba(0, 160, 90, 0.6)' : 'rgba(90, 90, 90, 0.6)';
-            btn.style.color = enabled ? '#eafff0' : '#ddd';
-            btn.title = '点击切换此武器启用/禁用';
-            btn.addEventListener('click', ()=>{
-                if (!s.weaponEnabled) s.weaponEnabled = new Array(s.weapons.length).fill(true);
-                s.weaponEnabled[i] = !s.weaponEnabled[i];
-                updateManualDisplay();
+            // helper to create option buttons
+            function makeOption(idSuffix, text, isOn) {
+                const btn = document.createElement('button');
+                btn.className = 'option-btn' + (isOn ? ' on' : '');
+                btn.type = 'button';
+                btn.dataset.opt = idSuffix;
+                btn.textContent = text;
+                return btn;
+            }
+
+            // Fire control (F)
+            const btnFcs = makeOption('fcs', `火控 (${fcsText})`, !!s.fireControlOverride);
+            btnFcs.addEventListener('click', (ev) => {
+                ev.stopPropagation(); ev.preventDefault();
+                s.fireControlOverride = !s.fireControlOverride;
+                // update visuals
+                if (s.fireControlOverride) btnFcs.classList.add('on'); else btnFcs.classList.remove('on');
+                btnFcs.textContent = `火控 (${s.fireControlOverride ? '已解锁' : '限制中'})`;
+                // update summary lines too
+                refs.lineFcs.textContent = `⚙️ 火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
             });
-            wt.appendChild(btn);
+
+            // Anti-ship (B)
+            const btnAntiShip = makeOption('antiShip', `反舰 (${antiShipText})`, !!s.autoAntiShip);
+            btnAntiShip.addEventListener('click', (ev) => {
+                ev.stopPropagation(); ev.preventDefault();
+                s.autoAntiShip = !s.autoAntiShip;
+                if (s.autoAntiShip) btnAntiShip.classList.add('on'); else btnAntiShip.classList.remove('on');
+                refs.lineFcs.textContent = `⚙️ 火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
+            });
+
+            // PD Missile (M)
+            const btnPdMissile = makeOption('pdMissile', `点防导弹 (${pdMissile})`, !!s.autoAntiMissile);
+            btnPdMissile.addEventListener('click', (ev) => {
+                ev.stopPropagation(); ev.preventDefault();
+                s.autoAntiMissile = !s.autoAntiMissile;
+                if (s.autoAntiMissile) btnPdMissile.classList.add('on'); else btnPdMissile.classList.remove('on');
+                refs.linePd.textContent = `🛡️ 点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
+            });
+
+            // PD Drone (N)
+            const btnPdDrone = makeOption('pdDrone', `点防无人机 (${pdDrone})`, !!s.autoAntiDrone);
+            btnPdDrone.addEventListener('click', (ev) => {
+                ev.stopPropagation(); ev.preventDefault();
+                s.autoAntiDrone = !s.autoAntiDrone;
+                if (s.autoAntiDrone) btnPdDrone.classList.add('on'); else btnPdDrone.classList.remove('on');
+                refs.linePd.textContent = `🛡️ 点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
+            });
+
+            // append buttons in a consistent order
+            refs.optionsRow.appendChild(btnFcs);
+            refs.optionsRow.appendChild(btnAntiShip);
+            refs.optionsRow.appendChild(btnPdMissile);
+            refs.optionsRow.appendChild(btnPdDrone);
+        } else {
+            // sync option button states (if options already built)
+            const btns = refs.optionsRow.querySelectorAll('.option-btn');
+            btns.forEach(btn => {
+                const opt = btn.dataset.opt;
+                if (opt === 'fcs') {
+                    if (s.fireControlOverride) btn.classList.add('on'); else btn.classList.remove('on');
+                    btn.textContent = `火控 (${s.fireControlOverride ? '已解锁' : '限制中'})`;
+                } else if (opt === 'antiShip') {
+                    if (s.autoAntiShip) btn.classList.add('on'); else btn.classList.remove('on');
+                    btn.textContent = `反舰 (${s.autoAntiShip ? '开' : '关'})`;
+                } else if (opt === 'pdMissile') {
+                    if (s.autoAntiMissile) btn.classList.add('on'); else btn.classList.remove('on');
+                    btn.textContent = `点防导弹 (${s.autoAntiMissile ? '开' : '关'})`;
+                } else if (opt === 'pdDrone') {
+                    if (s.autoAntiDrone) btn.classList.add('on'); else btn.classList.remove('on');
+                    btn.textContent = `点防无人机 (${s.autoAntiDrone ? '开' : '关'})`;
+                }
+            });
         }
+
+        // --- Weapons list: rebuild only when ship changes or count changes ---
+        const needRebuildWeapons = (refs.weaponList._shipRef !== s) || (refs.weaponList._count !== s.weapons.length);
+        if (needRebuildWeapons) {
+            refs.weaponList._shipRef = s;
+            refs.weaponList._count = s.weapons.length;
+            refs.weaponList.innerHTML = '';
+
+            for (let i = 0; i < s.weapons.length; i++) {
+                const name = s.weapons[i];
+                const enabled = !!s.weaponEnabled[i];
+
+                const row = document.createElement('div');
+                row.className = 'weapon-row';
+                row.dataset.index = i;
+
+                const label = document.createElement('div');
+                label.className = 'weapon-label';
+                label.textContent = `${i+1}: ${name}${s.weaponWarheads && s.weaponWarheads[i] ? `[${s.weaponWarheads[i]}]` : ''}`;
+
+                const btn = document.createElement('button');
+                btn.className = 'weapon-btn' + (enabled ? ' on' : '');
+                btn.type = 'button';
+                btn.dataset.index = i;
+                btn.textContent = enabled ? '启用' : '禁用';
+                btn.title = '点击切换此武器启用/禁用';
+
+                btn.addEventListener('click', function (ev) {
+                    ev.stopPropagation(); ev.preventDefault();
+                    const idx = Number(this.dataset.index);
+                    s.weaponEnabled[idx] = !s.weaponEnabled[idx];
+                    if (s.weaponEnabled[idx]) {
+                        this.classList.add('on');
+                        this.textContent = '启用';
+                    } else {
+                        this.classList.remove('on');
+                        this.textContent = '禁用';
+                    }
+                });
+
+                row.appendChild(label);
+                row.appendChild(btn);
+                refs.weaponList.appendChild(row);
+            }
+        } else {
+            // sync buttons if external state changed
+            const rows = refs.weaponList.querySelectorAll('.weapon-row');
+            rows.forEach(row => {
+                const idx = Number(row.dataset.index);
+                const btn = row.querySelector('.weapon-btn');
+                const label = row.querySelector('.weapon-label');
+                if (!btn || !label) return;
+                const shouldOn = !!s.weaponEnabled[idx];
+                if (shouldOn) {
+                    btn.classList.add('on');
+                    btn.textContent = '启用';
+                } else {
+                    btn.classList.remove('on');
+                    btn.textContent = '禁用';
+                }
+                // update label in case names changed
+                label.textContent = `${idx+1}: ${s.weapons[idx]}${s.weaponWarheads && s.weaponWarheads[idx] ? `[${s.weaponWarheads[idx]}]` : ''}`;
+            });
+        }
+
     } else {
-        el.innerHTML = `<div style=\"color:#e2e8f0;\">未接管</div>`;
+        // 未接管：清理并显示未接管提示
+        refs.title.textContent = '';
+        refs.lineTarget.textContent = '未接管';
+        refs.lineTarget.style.color = '#e2e8f0';
+        refs.lineFcs.textContent = '';
+        refs.linePd.textContent = '';
+        refs.optionsRow.innerHTML = '';
+        refs.weaponList.innerHTML = '';
+        refs.hint.textContent = '';
+        refs.shipRef = null;
     }
 }
+
 
 const shipInfoPanel = document.getElementById('shipInfoPanel');
 function updateShipInfoPanel() {
@@ -422,7 +700,11 @@ function updateTimeScaleDisplay(){
     el.innerHTML = `<span style="color:#88f">时间倍率</span>: <span style="color:#fff">${timeScale.toFixed(1)}x</span>`;
 }
 
+updateTimeScaleDisplay();
 function gameLoop() {
+    updateManualDisplay();
+    updateShipInfoPanel();
+    updateTrackingDisplay();
     ctx.fillStyle = '#0b0c10'; ctx.fillRect(0,0,canvas.width,canvas.height);
 
     const shipsToRemoveIndices = new Set();
@@ -692,12 +974,6 @@ function gameLoop() {
             ctx.stroke();
         }
     }
-
-    updateManualDisplay();
-    updateShipInfoPanel();
-
-    updateTrackingDisplay();
-
     requestAnimationFrame(gameLoop);
 }
 

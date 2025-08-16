@@ -12,7 +12,7 @@ export const SEPARATION_RADIUS = 20;
 export const ATTACK_RADIUS = 15;
 export const COLLISION_DAMAGE = 1;
 export const SHIP_SIZE = 6;
-export const RESPAWN_TIME = 30;
+export const RESPAWN_TIME = 300000000000000;
 export const MISSILE_ENGAGEMENT_RADIUS = 200;
 
 export const SEPARATION_WEIGHT = 6.0;

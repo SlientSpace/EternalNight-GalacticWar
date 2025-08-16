@@ -142,7 +142,7 @@ export class SeekingProjectile extends Weapon {
             ctx.restore();
         }
                 // 燃料条
-        const fuelPercent = this.fuel / 600;
+        const fuelPercent = this.fuel / 300;
         const barWidth = 8 * camera.zoom;
         const barHeight = 1 * camera.zoom;
         const barX = screenX - barWidth/2;
