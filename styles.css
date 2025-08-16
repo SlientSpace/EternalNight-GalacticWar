@@ -29,29 +29,6 @@ canvas.grabbing {
     pointer-events: none; /* 默认穿透，内部控件开启点击 */
     z-index: 999; /* 高于画布 */
 }
-
-/* 舰船信息面板 */
-#shipInfoPanel {
-    position: fixed; /* 改为固定定位，避免随页面滚动偏移 */
-    right: 20px;
-    top: 90px;
-    width: 360px;
-    background: rgba(10,12,18,0.9);
-    border: 1px solid rgba(255,255,255,0.06);
-    padding: 12px;
-    border-radius: 8px;
-    color: #e6edf3;
-    font-size: 13px;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.6);
-    display: none;
-    z-index: 1000; /* 高于其他浮层 */
-    pointer-events: auto; /* 允许点击 */
-}
-#shipInfoPanel h3 {
-    margin: 0 0 6px 0;
-    font-size: 16px;
-    color: #ffd080;
-}
 .weapon-row {
     display:flex;
     justify-content:space-between;

@@ -226,34 +226,47 @@ window.addEventListener('keyup', (e) => {
 function updateTrackingDisplay() {
     let el = document.getElementById('trackingDisplay');
     if (!el) {
-        el = document.createElement('div'); el.id = 'trackingDisplay';
-        el.style.position = 'fixed'; el.style.left = '20px'; el.style.top = '20px'; el.style.zIndex = 1000;
+        el = document.createElement('div');
+        el.id = 'trackingDisplay';
+        el.style.position = 'fixed';
+        el.style.left = '20px';
+        el.style.top = '20px';
+        el.style.zIndex = 1000;
         el.style.pointerEvents = 'auto';
+        el.style.width = '320px';
         el.style.fontFamily = 'monospace';
-        el.style.fontSize = '14px';
-        el.style.padding = '6px 10px';
-        el.style.backgroundColor = 'rgba(0,0,0,0.7)';
-        el.style.borderRadius = '4px';
-        el.style.border = '1px solid rgba(255,255,255,0.2)';
-        el.style.minWidth = '300px';
+        el.style.fontSize = '13px';
+        el.style.color = '#e2e8f0';
+        el.style.background = 'rgba(12,14,20,0.85)';
+        el.style.backdropFilter = 'blur(6px)';
+        el.style.border = '1px solid rgba(255,255,255,0.08)';
+        el.style.borderRadius = '10px';
+        el.style.padding = '10px 12px';
+        el.style.boxShadow = '0 8px 18px rgba(0,0,0,0.4)';
         document.body.appendChild(el);
     }
+
     if (camera.trackedShip) {
         const s = camera.trackedShip;
-        const pos = `位置: (${Math.round(s.position.x)}, ${Math.round(s.position.y)})`;
-        const vel = `速度: ${s.velocity.mag().toFixed(1)}`;
         const healthPercent = ((s.health / s.maxHealth) * 100).toFixed(0);
         const energyPercent = ((s.energy / s.maxEnergy) * 100).toFixed(0);
         const heatPercent = ((s.heat / s.maxHeat) * 100).toFixed(0);
         const dvPercent = ((s.deltaV / s.maxDeltaV) * 100).toFixed(0);
-        const empActive = (s.empedUntil && s.empedUntil > 0) ? `EMP:${Math.ceil(s.empedUntil)}帧` : 'EMP:无';
-        const jam = s.jamming ? '干扰:是' : '干扰:否';
+        const empActive = (s.empedUntil && s.empedUntil > 0) ? `${Math.ceil(s.empedUntil)} 帧` : '无';
+        const jam = s.jamming ? '是' : '否';
         const droneCount = s.drones ? s.drones.length : 0;
-        const avgFuelPct = (s.drones && s.drones.length>0) ? Math.round(s.drones.reduce((acc,d)=>acc + (d.fuel||0),0) / (600 * s.drones.length) * 100) : 0;
+        const avgFuelPct = (s.drones && s.drones.length > 0) ? Math.round(s.drones.reduce((acc,d)=>acc + (d.fuel||0),0) / (600 * s.drones.length) * 100) : 0;
         const readyMissileIdx = s.weapons.findIndex(w=>w===WEAPON_MISSILE);
         const warheadTxt = (readyMissileIdx!==-1 && s.weaponWarheads && s.weaponWarheads[readyMissileIdx]) ? s.weaponWarheads[readyMissileIdx] : '—';
-        
-        // 构建武器信息
+
+        // helper: 进度条
+        const bar = (pct,color='#4fd1c5') => `
+            <div style="height:6px; background:rgba(255,255,255,0.08); border-radius:4px; overflow:hidden;">
+                <div style="width:${pct}%; height:100%; background:${color};"></div>
+            </div>
+        `;
+
+        // 武器区
         let weaponsHtml = '';
         for (let i=0;i<s.weapons.length;i++){
             const name = s.weapons[i];
@@ -262,26 +275,51 @@ function updateTrackingDisplay() {
             const percent = props.cooldown ? Math.max(0, Math.min(100, (cooldown/props.cooldown)*100)) : 0;
             const warhead = s.weaponWarheads[i];
             const weaponLabel = warhead ? `${name}[${warhead}]` : name;
-            const barWidth = Math.round(percent / 5); // 每5%一个字符，共20个字符宽度
-            const bar = '█'.repeat(barWidth) + '░'.repeat(20 - barWidth);
-            weaponsHtml += `<div style="color:#ddd;font-size:11px;margin:2px 0;">
-                ${i+1}.${weaponLabel} (${props.damage}dmg/${props.range}r) [${bar}] ${Math.round(cooldown)}
-            </div>`;
+            weaponsHtml += `
+                <div style="margin:4px 0;">
+                    <div style="display:flex; justify-content:space-between; font-size:11px; color:#ddd;">
+                        <span>${i+1}. ${weaponLabel}</span>
+                        <span>${props.damage}dmg/${props.range}r | CD:${Math.round(cooldown)}</span>
+                    </div>
+                    ${bar(percent,'#f6ad55')}
+                </div>
+            `;
         }
-        
+
         el.innerHTML = `
-            <div style="color: ${fleetColors[s.fleet]}; font-weight: bold;">追踪: 舰队 ${s.fleet} ${s.typeLabel}</div>
-            <div style="color: #ccc; font-size: 12px;">状态: ${s.state} | 生命值: ${healthPercent}%</div>
-            <div style="color: #aaa; font-size: 11px;">${pos} | ${vel}</div>
-            <div style="color:#9fe; font-size: 11px;">能量: ${energyPercent}% (${Math.round(s.energy)}/${s.maxEnergy}) | 热量: ${heatPercent}% (${Math.round(s.heat)}/${s.maxHeat}) | ΔV: ${dvPercent}% (${Math.round(s.deltaV)}/${s.maxDeltaV})</div>
-            <div style="color:#c9f; font-size: 11px;">电子战: ${empActive} | ${jam} | 无人机: ${droneCount}/3${droneCount>0?` (平均燃料${avgFuelPct}%)`:''} | 战斗部: ${warheadTxt}</div>
-            <div style="color:#ff0; font-size:12px; margin:4px 0 2px 0; font-weight:bold;">武器系统:</div>
+            <div style="font-weight:bold; color:${fleetColors[s.fleet]}; font-size:14px; margin-bottom:4px;">
+                追踪: 舰队 ${s.fleet} ${s.typeLabel}
+            </div>
+            <div style="font-size:12px; color:#cbd5e0; margin-bottom:6px;">
+                状态: ${s.state} | 速度: ${s.velocity.mag().toFixed(1)} | 位置: (${Math.round(s.position.x)}, ${Math.round(s.position.y)})
+            </div>
+
+            <div style="font-size:12px; margin-bottom:4px;">生命值 ${healthPercent}%</div>
+            ${bar(healthPercent,'#f56565')}
+
+            <div style="font-size:12px; margin:6px 0 4px;">能量 ${energyPercent}% (${Math.round(s.energy)}/${s.maxEnergy})</div>
+            ${bar(energyPercent,'#63b3ed')}
+
+            <div style="font-size:12px; margin:6px 0 4px;">热量 ${heatPercent}%</div>
+            ${bar(heatPercent,'#ed8936')}
+
+            <div style="font-size:12px; margin:6px 0 4px;">ΔV ${dvPercent}%</div>
+            ${bar(dvPercent,'#9f7aea')}
+
+            <div style="font-size:11px; color:#c9f; margin:8px 0;">
+                EMP: ${empActive} | 干扰: ${jam} | 无人机: ${droneCount}/3${droneCount>0?` (燃料${avgFuelPct}%)`:''} | 战斗部: ${warheadTxt}
+            </div>
+
+            <div style="color:#ffeb3b; font-size:12px; font-weight:bold; margin-top:6px;">武器系统</div>
             ${weaponsHtml}
         `;
     } else {
-        el.innerHTML = `<div style="color: #e2e8f0;">未追踪</div>`;
+        el.innerHTML = `<div style="color:#e2e8f0;">未追踪</div>`;
     }
 }
+
+
+
 function updateManualDisplay() {
     // --- helpers ---
     function arraysEqualBool(a, b) {
@@ -313,7 +351,7 @@ function updateManualDisplay() {
         style.textContent = `
             .manual-display {
                 position: fixed;
-                left: 20px;
+                right: 20px;
                 top: 90px;
                 z-index: 1000;
                 pointer-events: auto;
@@ -486,9 +524,9 @@ function updateManualDisplay() {
     if (!needFullRebuild && el._refs) {
         // update header text
         el._refs.title.textContent = '接管中';
-        el._refs.lineTarget.textContent = `🎯 目标: ${targetTxt}`;
-        el._refs.lineFcs.textContent = `⚙️ 火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
-        el._refs.linePd.textContent = `🛡️ 点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
+        el._refs.lineTarget.textContent = `目标: ${targetTxt}`;
+        el._refs.lineFcs.textContent = `火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
+        el._refs.linePd.textContent = `点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
         el._refs.hint.textContent = '提示: WSAD 控制，空格开火，单击敌舰设为目标（快捷键：F/B/M/N，数字键 1.. 用于武器）';
 
         // sync option buttons' classes and text
@@ -665,21 +703,136 @@ function updateCamera() {
     }
 }
 
-function updateTimeScaleDisplay(){
+function updateTimeScaleDisplay() {
+    // 如果没有全局 timeScale，初始化为 1.0
+    if (typeof timeScale === 'undefined' || timeScale === null) timeScale = 1.0;
+
+    // 注入样式（只注入一次）
+    if (!document.getElementById('timeScaleDisplayStyles')) {
+        const style = document.createElement('style');
+        style.id = 'timeScaleDisplayStyles';
+        style.textContent = `
+            .time-scale-display {
+                position: absolute;
+                right: 20px;
+                top: 20px;
+                z-index: 1100;
+                font-family: monospace;
+                font-size: 14px;
+                padding: 8px 10px;
+                background: rgba(12,14,20,0.78);
+                backdrop-filter: blur(4px);
+                border-radius: 8px;
+                border: 1px solid rgba(255,255,255,0.08);
+                color: #e6eef6;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                min-width: 140px;
+                box-shadow: 0 6px 14px rgba(0,0,0,0.45);
+            }
+            .time-scale-label { color: #88f; font-weight: 600; margin-right: 4px; }
+            .time-scale-value { color: #fff; min-width:48px; text-align:center; font-weight:700; }
+            .time-scale-btn {
+                padding:4px 8px;
+                border-radius:6px;
+                border:1px solid rgba(255,255,255,0.06);
+                background: rgba(90,90,90,0.12);
+                color: #e6eef6;
+                cursor: pointer;
+                user-select: none;
+                transition: transform .08s ease, background .12s;
+                font-weight:700;
+            }
+            .time-scale-btn:active { transform: translateY(1px) scale(0.98); }
+            .time-scale-btn.small { padding:2px 6px; font-size:13px; border-radius:5px; }
+            .time-scale-btn.positive { background: linear-gradient(180deg, rgba(0,200,120,0.95), rgba(0,160,100,0.95)); color:#042613; }
+            .time-scale-btn.negative { background: linear-gradient(180deg, rgba(220,80,80,0.95), rgba(200,60,60,0.95)); color:#2b0f0f; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // 创建或获取容器（容器只创建一次，但内容会更新）
     let el = document.getElementById('timeScaleDisplay');
     if (!el) {
-        el = document.createElement('div'); el.id = 'timeScaleDisplay';
-        el.style.position = 'absolute'; el.style.right = '20px'; el.style.top = '20px'; el.style.zIndex = 11;
-        el.style.fontFamily = 'monospace';
-        el.style.fontSize = '14px';
-        el.style.padding = '6px 10px';
-        el.style.backgroundColor = 'rgba(0,0,0,0.7)';
-        el.style.borderRadius = '4px';
-        el.style.border = '1px solid rgba(255,255,255,0.2)';
+        el = document.createElement('div');
+        el.id = 'timeScaleDisplay';
+        el.className = 'time-scale-display';
+
+        // 内容结构
+        const lbl = document.createElement('div');
+        lbl.className = 'time-scale-label';
+        lbl.textContent = '时间倍率';
+
+        const minus = document.createElement('button');
+        minus.className = 'time-scale-btn small';
+        minus.type = 'button';
+        minus.title = '减小 0.1';
+        minus.textContent = '−';
+
+        const value = document.createElement('div');
+        value.className = 'time-scale-value';
+        value.id = 'timeScaleValue';
+
+        const plus = document.createElement('button');
+        plus.className = 'time-scale-btn small';
+        plus.type = 'button';
+        plus.title = '增加 0.1';
+        plus.textContent = '+';
+
+        // 按钮事件（只绑定一次）
+        minus.addEventListener('click', (ev) => {
+            ev.stopPropagation(); ev.preventDefault();
+            // 避免浮点误差：用整数运算（*10）
+            let v = Math.round((timeScale * 10)) / 10;
+            v = Math.max(0.1, Math.round((v - 0.1) * 10) / 10);
+            // clamp to 1 decimal
+            timeScale = Math.round(v * 10) / 10;
+            updateTimeScaleDisplay();
+            // 可选：触发回调如果需要
+            if (typeof window.onTimeScaleChange === 'function') window.onTimeScaleChange(timeScale);
+        });
+
+        plus.addEventListener('click', (ev) => {
+            ev.stopPropagation(); ev.preventDefault();
+            let v = Math.round((timeScale * 10)) / 10;
+            v = Math.min(10, Math.round((v + 0.1) * 10) / 10);
+            timeScale = Math.round(v * 10) / 10;
+            updateTimeScaleDisplay();
+            if (typeof window.onTimeScaleChange === 'function') window.onTimeScaleChange(timeScale);
+        });
+
+        // 把节点加入容器并 append 到 body
+        el.appendChild(lbl);
+        el.appendChild(minus);
+        el.appendChild(value);
+        el.appendChild(plus);
         document.body.appendChild(el);
+
+        // 保存引用用于后续更新
+        el._refs = { lbl, minus, value, plus };
     }
-    el.innerHTML = `<span style="color:#88f">时间倍率</span>: <span style="color:#fff">${timeScale.toFixed(1)}x</span>`;
+
+    // 更新显示值
+    const valueEl = el._refs && el._refs.value ? el._refs.value : document.getElementById('timeScaleValue');
+    // 保证显示一位小数
+    const display = (Math.round(timeScale * 10) / 10).toFixed(1) + 'x';
+    if (valueEl) valueEl.textContent = display;
+
+    // 可视化提示：当 timeScale>1 按钮变色为绿色；timeScale<1 为红；等于1 为中性（可选）
+    const plusBtn = el._refs.plus, minusBtn = el._refs.minus;
+    if (timeScale > 1.0) {
+        plusBtn.classList.add('positive'); plusBtn.classList.remove('negative');
+        minusBtn.classList.remove('positive'); minusBtn.classList.remove('negative');
+    } else if (timeScale < 1.0) {
+        minusBtn.classList.add('negative'); minusBtn.classList.remove('positive');
+        plusBtn.classList.remove('positive'); plusBtn.classList.remove('negative');
+    } else {
+        plusBtn.classList.remove('positive','negative');
+        minusBtn.classList.remove('positive','negative');
+    }
 }
+
 
 updateTimeScaleDisplay();
 function gameLoop() {
