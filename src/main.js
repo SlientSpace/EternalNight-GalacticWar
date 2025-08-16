@@ -8,6 +8,7 @@ import { Vector } from './vector.js';
 import { Particle, KineticProjectile, SeekingProjectile, EnergyProjectile, EMPProjectile, Drone } from './projectiles.js';
 import { Ship } from './ship.js';
 import { randomShipType, randomMissileWarhead } from './utils.js';
+import { iconLoader } from './iconLoader.js'
 
 const canvas = document.getElementById('beeCanvas');
 const ctx = canvas.getContext('2d');
@@ -19,6 +20,7 @@ let respawnCooldown1 = RESPAWN_TIME;
 let respawnCooldown2 = RESPAWN_TIME;
 
 const camera = { x: 0, y: 0, zoom: 1, trackedShip: null, manualControl: false };
+window.camera = camera;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
 let timeScale = 1;
@@ -196,6 +198,11 @@ window.addEventListener('keydown', (e) => {
             camera.trackedShip.autoAntiDrone = !camera.trackedShip.autoAntiDrone;
             updateManualDisplay();
             break;
+        case 'b':
+            // 自动反舰
+            camera.trackedShip.autoAntiShip = !camera.trackedShip.autoAntiShip;
+            updateManualDisplay();
+            break;
     }
 }
 
@@ -273,22 +280,42 @@ function updateManualDisplay() {
         const s = camera.trackedShip;
         const targetTxt = s.manualTarget && s.manualTarget.health > 0 ? `${s.manualTarget.typeLabel || '目标'} (${s.manualTarget.fleet})` : '无目标';
         const fcs = s.fireControlOverride ? '已解锁' : '限制中';
-        const hasPdef = s.weapons.findIndex(w => w === 'point_defense') !== -1;
         const pdMissile = s.autoAntiMissile ? '开' : '关';
         const pdDrone = s.autoAntiDrone ? '开' : '关';
-        
+        const antiShip = s.autoAntiShip ? '开' : '关';
+
         let html = `
             <div style="color:#ffb000;font-weight:bold;">接管中</div>
             <div style="color:#bbb;font-size:12px;">目标: ${targetTxt}</div>
-            <div style="color:#9fe;font-size:12px;">火控: ${fcs} (F)</div>`;
-            
-        if (hasPdef) {
-            html += `<div style="color:#9fe;font-size:12px;">点防: 反导弹 ${pdMissile} (M) | 反无人机 ${pdDrone} (N)</div>`;
-        }
-        
-        html += `<div style="color:#999;font-size:11px;">提示: WSAD 控制，空格开火，单击敌舰设为目标</div>`;
+            <div style="color:#9fe;font-size:12px;">火控: ${fcs} (F) | 反舰: ${antiShip} (B)</div>
+            <div style="color:#9fe;font-size:12px;">点防: 反导弹 ${pdMissile} (M) | 反无人机 ${pdDrone} (N)</div>
+            <div id="weaponToggles" style="margin-top:6px; display:flex; flex-wrap:wrap; gap:6px;"></div>
+            <div style="color:#999;font-size:11px;">提示: WSAD 控制，空格开火，单击敌舰设为目标</div>`;
         
         el.innerHTML = html;
+
+        // 渲染武器开关按钮
+        const wt = document.getElementById('weaponToggles');
+        wt.innerHTML = '';
+        for (let i=0;i<s.weapons.length;i++){
+            const name = s.weapons[i];
+            const enabled = (s.weaponEnabled && s.weaponEnabled[i] !== false);
+            const btn = document.createElement('button');
+            btn.textContent = `${i+1}:${name}${s.weaponWarheads[i]?`[${s.weaponWarheads[i]}]`:''}`;
+            btn.style.padding = '2px 6px';
+            btn.style.fontSize = '12px';
+            btn.style.borderRadius = '3px';
+            btn.style.border = '1px solid rgba(255,255,255,0.2)';
+            btn.style.background = enabled ? 'rgba(0, 160, 90, 0.6)' : 'rgba(90, 90, 90, 0.6)';
+            btn.style.color = enabled ? '#eafff0' : '#ddd';
+            btn.title = '点击切换此武器启用/禁用';
+            btn.addEventListener('click', ()=>{
+                if (!s.weaponEnabled) s.weaponEnabled = new Array(s.weapons.length).fill(true);
+                s.weaponEnabled[i] = !s.weaponEnabled[i];
+                updateManualDisplay();
+            });
+            wt.appendChild(btn);
+        }
     } else {
         el.innerHTML = `<div style=\"color:#e2e8f0;\">未接管</div>`;
     }
@@ -347,8 +374,24 @@ function initShips() {
     }
 }
 initShips();
+// 暴露全局数组以供舰船自用逻辑访问（仅用于本地演示）
+window.__allShips = window.__allShips || [];
+window.__allProjectiles = window.__allProjectiles || [];
+// 同步一次
+window.__allShips = ships;
+window.__allProjectiles = projectiles;
 
-function createExplosion(x,y,color,scale=1){ for (let i=0;i<scale;i++) particles.push(new Particle(x,y,color)); }
+// 限制粒子总量，避免过度渲染
+const MAX_PARTICLES = 1800;
+
+function createExplosion(x,y,color,scale=1){
+    // 根据规模确定基础数量，并限制总量
+    const base = 10;
+    const toSpawn = Math.min(MAX_PARTICLES - particles.length, Math.max(1, Math.floor(base * scale)));
+    for (let i=0; i<toSpawn; i++) {
+        particles.push(Particle.obtain(x, y, color));
+    }
+}
 
 function updateCamera() {
     if (camera.trackedShip && camera.trackedShip.health > 0) {
@@ -413,7 +456,9 @@ function gameLoop() {
     // 更新并移动子弹/导弹/无人机/EMP
     for (let i=0;i<projectiles.length;i++){
         const p = projectiles[i];
+        // 更新弹丸并检查是否需要移除
         if (p.constructor.name === 'SeekingProjectile' && p.fuel <= 0) { projectilesToRemoveIndices.add(i); continue; }
+        if (p.constructor.name === 'SeekingProjectile' && p.health <= 0) { projectilesToRemoveIndices.add(i); continue; }
         if (p.isOffscreen()) { projectilesToRemoveIndices.add(i); continue; }
         if (p.constructor.name === 'SeekingProjectile') p.update(ships, timeScale);
         else if (p.constructor.name === 'Drone') p.update(ships, timeScale);
@@ -431,7 +476,7 @@ function gameLoop() {
                     Math.pow(p.position.x - s.position.x,2) + Math.pow(p.position.y - s.position.y,2)
                 );
                 if (d < EMP_RANGE) {
-                    s.empedUntil = Math.max(s.empedUntil || 0, 180);
+                    s.empedUntil = Math.max(s.empedUntil || 0, 40);
                     s.jamming = true;
                 }
             }
@@ -491,6 +536,18 @@ function gameLoop() {
                                         }
                                     }
                                 }
+                                // 对无人机的范围伤害
+                                for (let k=0;k<projectiles.length;k++){
+                                    const drone = projectiles[k];
+                                    if (drone.constructor.name === 'Drone' && drone.fleet !== p.fleet) {
+                                        const dd = Math.hypot(p.position.x - drone.position.x, p.position.y - drone.position.y);
+                                        if (dd < R) {
+                                            const factor = Math.max(0, 1 - dd / R);
+                                            drone.health -= p.damage * baseMult * 0.5 * factor;
+                                            if (drone.health <= 0) projectilesToRemoveIndices.add(k);
+                                        }
+                                    }
+                                }
                                 // 破片散布视觉（不额外伤害，只粒子）
                                 const shards = wh === 'nuclear' ? 14 : 8;
                                 for (let t=0;t<shards;t++) createExplosion(p.position.x, p.position.y, '#ffcc66', 0.7);
@@ -508,6 +565,30 @@ function gameLoop() {
                         break;
                     }
                 }
+            }
+        }
+    }
+
+    // 子弹与无人机命中处理
+    for (let i=0;i<projectiles.length;i++){
+        if (projectilesToRemoveIndices.has(i)) continue;
+        const p = projectiles[i];
+        if (p.constructor.name === 'Drone') continue; // 无人机不攻击无人机
+        for (let j=0;j<projectiles.length;j++){
+            if (projectilesToRemoveIndices.has(j)) continue;
+            const drone = projectiles[j];
+            if (drone.constructor.name !== 'Drone') continue;
+            if (p.fleet === drone.fleet) continue;
+            const d = Math.sqrt(Math.pow(p.position.x - drone.position.x,2) + Math.pow(p.position.y - drone.position.y,2));
+            if (d < 6) { // 无人机较小，碰撞距离也小一些
+                drone.health -= p.damage;
+                projectilesToRemoveIndices.add(i);
+                createExplosion(p.position.x, p.position.y, '#ff6600', 0.5);
+                if (drone.health <= 0) {
+                    projectilesToRemoveIndices.add(j);
+                    createExplosion(drone.position.x, drone.position.y, '#ff4400', 0.8);
+                }
+                break;
             }
         }
     }
@@ -538,46 +619,56 @@ function gameLoop() {
     projectiles.length = 0;
     projectiles.push(...newProjectiles);
 
+    // 同步全局引用，供舰船自用逻辑访问
+    window.__allShips = ships;
+    window.__allProjectiles = projectiles;
+
     updateCamera();
 
     // 接管模式下：自动点防火控（反导弹/反无人机）
     if (camera.manualControl && camera.trackedShip && camera.trackedShip.health > 0) {
         const s = camera.trackedShip;
-        // 找出PDEF武器索引
-        const pdefIndex = s.weapons.findIndex(w => w === 'point_defense');
-        if (pdefIndex !== -1 && s.shootCooldowns[pdefIndex] <= 0) {
-            const pdefRange = (weaponProps['point_defense']?.range) || 120;
-            let bestTarget = null;
-            let bestDist = Infinity;
-            // 搜索导弹/无人机
-            for (const p of projectiles) {
-                if (p.fleet === s.fleet) continue;
-                const isMissile = p.constructor && p.constructor.name === 'SeekingProjectile';
-                const isDrone = p.constructor && p.constructor.name === 'Drone';
-                if ((isMissile && s.autoAntiMissile) || (isDrone && s.autoAntiDrone)) {
-                    const dx = Math.abs(s.position.x - p.position.x);
-                    const dy = Math.abs(s.position.y - p.position.y);
-                    const distanceX = Math.min(dx, GAME_WORLD_WIDTH - dx);
-                    const distanceY = Math.min(dy, GAME_WORLD_HEIGHT - dy);
-                    const d = Math.hypot(distanceX, distanceY);
-                    if (d <= pdefRange && d < bestDist) { bestDist = d; bestTarget = p; }
+        // 遍历所有武器
+        for (let weaponIndex = 0; weaponIndex < s.weapons.length; weaponIndex++) {
+            if (s.shootCooldowns[weaponIndex] <= 0) {
+                const weaponRange = weaponProps[s.weapons[weaponIndex]]?.range || 120;
+                let bestTarget = null;
+                let bestDist = Infinity;
+                
+                // 搜索导弹/无人机
+                for (const p of projectiles) {
+                    if (p.fleet === s.fleet) continue;
+                    const isMissile = p.constructor && p.constructor.name === 'SeekingProjectile';
+                    const isDrone = p.constructor && p.constructor.name === 'Drone';
+                    if ((isMissile && s.autoAntiMissile) || (isDrone && s.autoAntiDrone)) {
+                        const dx = Math.abs(s.position.x - p.position.x);
+                        const dy = Math.abs(s.position.y - p.position.y);
+                        const distanceX = Math.min(dx, GAME_WORLD_WIDTH - dx);
+                        const distanceY = Math.min(dy, GAME_WORLD_HEIGHT - dy);
+                        const d = Math.hypot(distanceX, distanceY);
+                        if (d <= weaponRange && d < bestDist) {
+                            bestDist = d;
+                            bestTarget = p;
+                        }
+                    }
                 }
-            }
-            if (bestTarget) {
-                s.shoot(pdefIndex, bestTarget, projectiles);
+
+                if (bestTarget) {
+                    s.shoot(weaponIndex, bestTarget, projectiles);
+                }
             }
         }
     }
 
     for (const ship of ships) {
-        if (camera.manualControl && camera.trackedShip === ship) ship.controlUpdate(controlInputs, projectiles);
+        if (camera.manualControl && camera.trackedShip === ship) ship.updateAI(ships, projectiles, controlInputs);
         ship.update(timeScale);
         ship.edges(GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT);
         ship.draw(ctx, camera, canvas, SHIP_SIZE, particleColors);
     }
 
     for (let i=particles.length-1;i>=0;i--){
-        const p = particles[i]; p.update(timeScale); p.draw(ctx, camera); if (p.life <= 0) particles.splice(i,1);
+        const p = particles[i]; p.update(timeScale); p.draw(ctx, camera); if (p.life <= 0) { Particle.release(p); particles.splice(i,1); }
     }
     for (const p of projectiles){
         p.draw(ctx, camera);
@@ -591,6 +682,9 @@ function gameLoop() {
             const r = 12 + (age/40);
             const tx = (s.position.x - camera.x) * camera.zoom;
             const ty = (s.position.y - camera.y) * camera.zoom;
+            const cw = canvas.width, ch = canvas.height;
+            const margin = r * camera.zoom + 4;
+            if (tx < -margin || tx > cw + margin || ty < -margin || ty > ch + margin) continue;
             ctx.beginPath();
             ctx.arc(tx, ty, r * camera.zoom, 0, Math.PI*2);
             ctx.strokeStyle = `rgba(255,255,0,${alpha})`;
@@ -607,4 +701,15 @@ function gameLoop() {
     requestAnimationFrame(gameLoop);
 }
 
-window.addEventListener('load', gameLoop);
+async function startGame(){
+    try {
+        await iconLoader.loadAllIcons();
+    } catch (e) {
+        console.warn('图标加载失败，继续使用旧有绘制方式', e);
+    }
+    // 启动主循环
+    window.addEventListener('load', gameLoop);
+}
+
+startGame();
+window.iconLoader = iconLoader;

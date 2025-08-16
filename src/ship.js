@@ -49,6 +49,8 @@ export class Ship {
         this.fireControlOverride = false; // 火控限制解锁状态
         this.autoAntiMissile = false; // 自动反导弹开关
         this.autoAntiDrone = false; // 自动反无人机开关
+        this.autoAntiShip = false; // 自动反舰开关
+        this.weaponEnabled = new Array(this.weaponSlots).fill(true); // 武器启用状态（接管模式下可控制）
     }
 
     applyForce(force){ this.acceleration.add(force); }
@@ -104,7 +106,76 @@ export class Ship {
         return centerOfMass;
     }
 
-    updateAI(ships, projectiles) {
+    updateAI(ships, projectiles, inputs = null) {
+        // 如果有手动输入，处理手动控制逻辑
+        if (inputs) {
+            if (inputs.up) this.velocity.y -= 0.15;
+            if (inputs.down) this.velocity.y += 0.15;
+            if (inputs.left) this.velocity.x -= 0.15;
+            if (inputs.right) this.velocity.x += 0.15;
+
+            this.velocity.limit(this.maxSpeed * 1.6);
+
+            // 自动反舰：选取最近敌舰进行攻击
+            if (this.autoAntiShip) {
+                if (!(this.manualTarget && this.manualTarget.health > 0)){
+                    let nearest = null; let nearestDist = Infinity;
+                    for (const s of window.__allShips || []) {
+                        if (s === this || s.fleet === this.fleet || s.health <= 0) continue;
+                        const dx = Math.abs(this.position.x - s.position.x);
+                        const dy = Math.abs(this.position.y - s.position.y);
+                        const distanceX = Math.min(dx, 5000 - dx);
+                        const distanceY = Math.min(dy, 3000 - dy);
+                        const d = Math.hypot(distanceX, distanceY);
+                        if (d < nearestDist) { nearestDist = d; nearest = s; }
+                    }
+                    if (nearest) {
+                        this.manualTarget = nearest;
+                    }
+                }
+                const idx = this._firstReadyWeaponIndex();
+                if (idx !== -1) {
+                    this.shoot(idx, this.manualTarget, projectiles);
+                }
+            }
+
+            // 自动点防：所有武器可作为拦截器
+            if (this.autoAntiMissile || this.autoAntiDrone) {
+                let bestTarget = null; let bestDist = Infinity;
+                for (const p of (window.__allProjectiles || [])) {
+                    if (p.fleet === this.fleet) continue;
+                    const isMissile = p.constructor && p.constructor.name === 'SeekingProjectile';
+                    const isDrone = p.constructor && p.constructor.name === 'Drone';
+                    if (!((isMissile && this.autoAntiMissile) || (isDrone && this.autoAntiDrone))) continue;
+                    const dx = Math.abs(this.position.x - p.position.x);
+                    const dy = Math.abs(this.position.y - p.position.y);
+                    const distanceX = Math.min(dx, 5000 - dx);
+                    const distanceY = Math.min(dy, 3000 - dy);
+                    const d = Math.hypot(distanceX, distanceY);
+                    if (d < bestDist) { bestDist = d; bestTarget = p; }
+                }
+                if (bestTarget) {
+                    // 使用第一个就绪武器射击
+                    const idx = this._firstReadyWeaponIndex();
+                    if (idx !== -1) this.shoot(idx, bestTarget, projectiles);
+                }
+            }
+
+            if (inputs.fire) {
+                const idx = this._firstReadyWeaponIndex();
+                if (idx !== -1) {
+                    if (this.manualTarget && this.manualTarget.health > 0) {
+                        this.shoot(idx, this.manualTarget, projectiles);
+                    } else {
+                        const fakeTarget = { position: new Vector(this.position.x + this.velocity.x * 10, this.position.y + this.velocity.y * 10), constructor:{name:'Fake'} };
+                        this.shoot(idx, fakeTarget, projectiles);
+                    }
+                }
+            }
+            return; // 手动控制时不执行AI逻辑
+        }
+
+        // AI控制逻辑
         let closestEnemy = null; let minDistance = Infinity;
         for (const other of ships) {
             if (other.fleet !== this.fleet && other.health > 0) {
@@ -114,17 +185,22 @@ export class Ship {
         }
 
         let closestMissile = null; let minMissileDistance = Infinity;
+        let closestDrone = null; let minDroneDistance = Infinity;
         for (const p of projectiles) {
-            if (p.fleet !== this.fleet && p.constructor.name === 'SeekingProjectile') {
-                const d = Math.sqrt(Math.pow(this.position.x - p.position.x,2) + Math.pow(this.position.y - p.position.y,2));
-                if (d < minMissileDistance) { minMissileDistance = d; closestMissile = p; }
+            if (p.fleet === this.fleet) continue;
+            const d = Math.sqrt(Math.pow(this.position.x - p.position.x,2) + Math.pow(this.position.y - p.position.y,2));
+            if (p.constructor.name === 'SeekingProjectile') {
+                if (d < minMissileDistance && (p.health && p.health > 0)) { minMissileDistance = d; closestMissile = p; }
+
+            } else if (p.constructor.name === 'Drone') {
+                if (d < minDroneDistance && (p.health && p.health > 0)) { minDroneDistance = d; closestDrone = p; }
             }
         }
 
-        if (this.health < this.maxHealth/2 && closestEnemy) {
-            this.state = 'flee';
-        } else if (closestMissile && minMissileDistance < MISSILE_ENGAGEMENT_RADIUS) {
+        if ((closestMissile && minMissileDistance < MISSILE_ENGAGEMENT_RADIUS) || (closestDrone && minDroneDistance < MISSILE_ENGAGEMENT_RADIUS)) {
             this.state = 'intercept';
+        } else if (this.health < this.maxHealth/2 && closestEnemy) {
+            this.state = 'flee';
         } else {
             const pwp = weaponProps[this.primaryWeapon];
             if (closestEnemy && minDistance < pwp.range) this.state = 'attack';
@@ -141,12 +217,20 @@ export class Ship {
 
         this.applyForce(separation);
 
-        if (this.state === 'intercept' && closestMissile) {
-            const interceptForce = this.seek(closestMissile.position);
-            interceptForce.mult(ATTACK_WEIGHT);
-            this.applyForce(interceptForce);
-            const idx = this._firstReadyWeaponIndex();
-            if (idx !== -1) this.shoot(idx, closestMissile, projectiles);
+        if (this.state === 'intercept') {
+            // 选择最近的导弹或无人机作为拦截目标（优先最近目标）
+            let pdTarget = null;
+            if (closestMissile && minMissileDistance < MISSILE_ENGAGEMENT_RADIUS) pdTarget = closestMissile;
+            if (closestDrone && minDroneDistance < MISSILE_ENGAGEMENT_RADIUS) {
+                if (!pdTarget || minDroneDistance < minMissileDistance) pdTarget = closestDrone;
+            }
+            if (pdTarget) {
+                const interceptForce = this.seek(pdTarget.position);
+                interceptForce.mult(ATTACK_WEIGHT);
+                this.applyForce(interceptForce);
+                const idx = this._firstReadyWeaponIndex();
+                if (idx !== -1) this.shoot(idx, pdTarget, projectiles);
+            }
         } else if (this.state === 'attack' && closestEnemy) {
             let attackForce = new Vector(0,0);
             const pwp = weaponProps[this.primaryWeapon];
@@ -187,34 +271,23 @@ export class Ship {
 
     _firstReadyWeaponIndex() {
         for (let i=0;i<this.weapons.length;i++){
+            // 在手动控制模式下，只返回启用的武器
+            const isManual = window.camera && window.camera.manualControl && window.camera.trackedShip === this;
+            if (isManual && !this.weaponEnabled[i]) continue;
             if (this.shootCooldowns[i] <= 0) return i;
         }
         return -1;
     }
 
-    controlUpdate(inputs, projectiles) {
-        if (inputs.up) this.velocity.y -= 0.15;
-        if (inputs.down) this.velocity.y += 0.15;
-        if (inputs.left) this.velocity.x -= 0.15;
-        if (inputs.right) this.velocity.x += 0.15;
 
-        this.velocity.limit(this.maxSpeed * 1.6);
-
-        if (inputs.fire) {
-            const idx = this._firstReadyWeaponIndex();
-            if (idx !== -1) {
-                if (this.manualTarget && this.manualTarget.health > 0) {
-                    this.shoot(idx, this.manualTarget, projectiles);
-                } else {
-                    const fakeTarget = { position: new Vector(this.position.x + this.velocity.x * 10, this.position.y + this.velocity.y * 10), constructor:{name:'Fake'} };
-                    this.shoot(idx, fakeTarget, projectiles);
-                }
-            }
-        }
-    }
 
     shoot(weaponIndex, target, projectiles) {
         if (weaponIndex < 0 || weaponIndex >= this.weapons.length) return;
+
+        // 检查武器是否启用（在手动控制模式下）
+        const isManual = window.camera && window.camera.manualControl && window.camera.trackedShip === this;
+        if (isManual && !this.weaponEnabled[weaponIndex]) return;
+        
         const wtype = this.weapons[weaponIndex];
         const props = weaponProps[wtype];
         if (this.shootCooldowns[weaponIndex] > 0) return;
@@ -254,8 +327,8 @@ export class Ship {
                         targetPoint = new Vector(targetPoint.x + Math.cos(offA)*offR, targetPoint.y + Math.sin(offA)*offR);
                     }
                 }
-                const dx2 = this.position.x - targetPoint.x;
-                const dy2 = this.position.y - targetPoint.y;
+                const dx2 = targetPoint.x - target.position.x;
+                const dy2 = targetPoint.y - target.position.y;
                 const dist2 = Math.hypot(dx2, dy2);
                 const distanceAttenuation = Math.max(0.3, 1 - (rangeCheck ? Math.min(dist2, rangeCheck) / rangeCheck : 1));
                 const actualDamage = props.damage * distanceAttenuation;
@@ -264,7 +337,8 @@ export class Ship {
                     target.health -= actualDamage;
                     didHit = true;
                 }
-                this.laserTarget = didHit ? target : null; // 只有命中才保留激光束
+                this.laserTarget = target && didHit ? target : null; // 只有命中才保留激光束
+
             } else {
                 this.laserTarget = null;
             }
@@ -394,7 +468,7 @@ export class Ship {
         this.velocity.add(scaledAcceleration);
         
         // ΔV 限制速度
-        const maxSpeedByDeltaV = this.deltaV > 10 ? this.maxSpeed : this.maxSpeed * 0.3;
+        const maxSpeedByDeltaV = this.deltaV > 10 ? this.maxSpeed : this.maxSpeed * 1; // ΔV逻辑还没写好这样的（）
         this.velocity.limit(maxSpeedByDeltaV);
 
         // 限制角速度（转向角度变化）
@@ -511,19 +585,30 @@ export class Ship {
             ctx.globalAlpha = 1;
         }
 
-        // 舰船三角体
-        ctx.beginPath();
+        // 舰船图标绘制（替换原三角）
         const size = SHIP_SIZE * camera.zoom;
         const angle = Math.atan2(this.velocity.y, this.velocity.x);
         ctx.save();
-        ctx.translate(screenX, screenY);
-        ctx.rotate(angle);
-        ctx.moveTo(size,0);
-        ctx.lineTo(-size, -size/2);
-        ctx.lineTo(-size, size/2);
-        ctx.closePath();
-        ctx.fillStyle = this.color;
-        ctx.fill();
+        if (window.iconLoader && window.iconLoader.isLoaded && window.iconLoader.isLoaded()) {
+            const typeKey = this.typeKey;
+            const iconName = typeKey;
+            const baseSize = SHIP_SIZE * 2; // 放大到更清晰
+            const scaleByType = this.weaponSlots >= 5 ? 1.6 : this.weaponSlots === 4 ? 1.45 : this.weaponSlots === 3 ? 1.25 : this.weaponSlots === 2 ? 1.1 : 1.0;
+            const iconW = baseSize * scaleByType * camera.zoom;
+            const iconH = iconW; // 方形图标
+            window.iconLoader.drawColoredIcon(ctx, iconName, screenX, screenY, iconW, iconH, this.color, angle);
+        } else {
+            // 退化为原三角形
+            ctx.beginPath();
+            ctx.translate(screenX, screenY);
+            ctx.rotate(angle);
+            ctx.moveTo(size,0);
+            ctx.lineTo(-size, -size/2);
+            ctx.lineTo(-size, size/2);
+            ctx.closePath();
+            ctx.fillStyle = this.color;
+            ctx.fill();
+        }
         ctx.restore();
 
         if (this.manualTarget && this.manualTarget.health > 0) {

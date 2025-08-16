@@ -18,12 +18,31 @@ export class Particle {
     draw(ctx, camera){
         const screenX = (this.position.x - camera.x) * camera.zoom;
         const screenY = (this.position.y - camera.y) * camera.zoom;
+        // 视口裁剪：超出屏幕一定边距则跳过
+        const r = 3 * camera.zoom;
+        const cw = ctx.canvas.width, ch = ctx.canvas.height;
+        if (screenX < -r || screenX > cw + r || screenY < -r || screenY > ch + r) return;
         ctx.beginPath(); ctx.arc(screenX, screenY, 2.2 * camera.zoom, 0, Math.PI*2);
         ctx.fillStyle = this.color; ctx.globalAlpha = Math.min(1, this.life*1.2); ctx.fill(); ctx.globalAlpha = 1;
     }
+    // 对象池（静态）
+    static _pool = [];
+    static obtain(x, y, color){
+        const p = Particle._pool.pop() || new Particle(x,y,color);
+        // 重置状态
+        p.position.x = x; p.position.y = y;
+        p.velocity.x = Math.random()*4-2; p.velocity.y = Math.random()*4-2;
+        p.life = 1; p.color = color;
+        return p;
+    }
+    static release(p){
+        if (!p) return;
+        // 限制池大小，防止无限增长
+        if (Particle._pool.length < 2000) Particle._pool.push(p);
+    }
 }
 
-// Weapon 基类
+// 基类：弹丸
 export class Weapon {
     constructor(x,y,vx,vy,fleet,damage){
         this.position = new Vector(x,y);
@@ -63,6 +82,8 @@ export class SeekingProjectile extends Weapon {
         this.maxForce = 0.1;
         this.fuel = 300;
         this.warhead = warhead;
+        this.health = 8; // 导弹血量较少，容易被激光摧毁
+        this.maxHealth = 8;
     }
     update(ships, timeScale){
         if (!this.target || (this.target.health !== undefined && this.target.health <= 0)) {
@@ -90,23 +111,54 @@ export class SeekingProjectile extends Weapon {
         const sv = this.velocity.clone().mult(timeScale);
         this.position.add(sv);
         this.fuel -= timeScale;
+        if (this.fuel <= 0) {
+            this.health = 0;
+        }
     }
     draw(ctx, camera){
         const screenX = (this.position.x - camera.x) * camera.zoom;
         const screenY = (this.position.y - camera.y) * camera.zoom;
-        ctx.fillStyle = this.color;
-        const size = 6 * camera.zoom;
         const angle = Math.atan2(this.velocity.y, this.velocity.x);
-        ctx.save();
-        ctx.translate(screenX, screenY);
-        ctx.rotate(angle);
-        ctx.beginPath();
-        ctx.moveTo(size,0);
-        ctx.lineTo(-size,-size/2);
-        ctx.lineTo(-size,size/2);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
+        const baseSize = 5 * camera.zoom; // 比飞船略小
+        const cw = ctx.canvas.width, ch = ctx.canvas.height;
+        const margin = baseSize * 4;
+        if (screenX < -margin || screenX > cw + margin || screenY < -margin || screenY > ch + margin) return;
+        if (window.iconLoader && window.iconLoader.isLoaded && window.iconLoader.isLoaded()) {
+            const iconW = baseSize * 6.0; // 调整到合适可见
+            const iconH = iconW;
+            window.iconLoader.drawColoredIcon(ctx, 'missile', screenX, screenY, iconW, iconH, this.color, angle);
+        } else {
+            ctx.fillStyle = this.color;
+            const size = 6 * camera.zoom;
+            ctx.save();
+            ctx.translate(screenX, screenY);
+            ctx.rotate(angle);
+            ctx.beginPath();
+            ctx.moveTo(size,0);
+            ctx.lineTo(-size,-size/2);
+            ctx.lineTo(-size,size/2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+                // 燃料条
+        const fuelPercent = this.fuel / 600;
+        const barWidth = 8 * camera.zoom;
+        const barHeight = 1 * camera.zoom;
+        const barX = screenX - barWidth/2;
+        const barY = screenY + baseSize + 2 * camera.zoom;
+        ctx.fillStyle = '#333';
+        ctx.fillRect(barX, barY, barWidth, barHeight);
+        ctx.fillStyle = fuelPercent > 0.3 ? '#0099ff' : '#ff9900';
+        ctx.fillRect(barX, barY, barWidth * fuelPercent, barHeight);
+
+        // 血量条（在燃料条下方）
+        const healthPercent = Math.max(0, this.health / this.maxHealth); 
+        const healthY = barY + barHeight + 1 * camera.zoom; // 往下偏移一点
+        ctx.fillStyle = '#333';
+        ctx.fillRect(barX, healthY, barWidth, barHeight);
+        ctx.fillStyle = healthPercent > 0.5 ? '#00cc44' : '#ff3333';
+        ctx.fillRect(barX, healthY, barWidth * healthPercent, barHeight);
     }
 }
 
@@ -117,6 +169,9 @@ export class EnergyProjectile extends KineticProjectile {
         const screenX = (this.position.x - camera.x) * camera.zoom;
         const screenY = (this.position.y - camera.y) * camera.zoom;
         const size = 3 * camera.zoom;
+        const cw = ctx.canvas.width, ch = ctx.canvas.height;
+        const margin = size * 3;
+        if (screenX < -margin || screenX > cw + margin || screenY < -margin || screenY > ch + margin) return;
         ctx.beginPath(); ctx.arc(screenX, screenY, size, 0, Math.PI*2);
         ctx.fillStyle = this.color; ctx.fill();
     }
@@ -178,6 +233,9 @@ export class EMPProjectile extends Weapon {
     draw(ctx, camera) {
         const screenX = (this.position.x - camera.x) * camera.zoom;
         const screenY = (this.position.y - camera.y) * camera.zoom;
+        const cw = ctx.canvas.width, ch = ctx.canvas.height;
+        const margin = this.range * camera.zoom + 5;
+        if (screenX < -margin || screenX > cw + margin || screenY < -margin || screenY > ch + margin) return;
         
         if (!this.activated) {
             // 飞行阶段显示为紫色球体
@@ -258,8 +316,12 @@ export class Drone extends Weapon {
         }
         
         let desired = new Vector(0, 0);
-        
-        if (this.fuel < 100 || !this.motherShip || this.motherShip.health <= 0) {
+
+        if (this.fuel <= 0) {
+            this.health = 0;
+        }
+
+        if (this.fuel < 300 || !this.motherShip || this.motherShip.health <= 0) {
             // 返回母舰或自毁
             this.state = 'return';
             if (this.motherShip && this.motherShip.health > 0) {
@@ -320,46 +382,57 @@ export class Drone extends Weapon {
     
     draw(ctx, camera) {
         if (this.health <= 0) return;
-        
         const screenX = (this.position.x - camera.x) * camera.zoom;
         const screenY = (this.position.y - camera.y) * camera.zoom;
-        const size = this.size * camera.zoom;
-        
-        // 无人机本体（小三角形）
         const angle = Math.atan2(this.velocity.y, this.velocity.x);
-        ctx.save();
-        ctx.translate(screenX, screenY);
-        ctx.rotate(angle);
-        
-        ctx.beginPath();
-        ctx.moveTo(size, 0);
-        ctx.lineTo(-size, -size/2);
-        ctx.lineTo(-size, size/2);
-        ctx.closePath();
-        
-        // 根据状态改变颜色
-        if (this.state === 'attack') {
-            ctx.fillStyle = '#ff6666';
-        } else if (this.state === 'return') {
-            ctx.fillStyle = '#ffff66';
+        const baseSize = this.size * camera.zoom;
+        const cw = ctx.canvas.width, ch = ctx.canvas.height;
+        const margin = baseSize * 4;
+        if (screenX < -margin || screenX > cw + margin || screenY < -margin || screenY > ch + margin) return;
+        if (window.iconLoader && window.iconLoader.isLoaded && window.iconLoader.isLoaded()) {
+            const iconW = baseSize * 6.0; // 无人机图标略小
+            const iconH = iconW;
+            // 状态颜色：在主色调基础上微调
+            let color = '#66ff66';
+            if (this.state === 'attack') color = '#ff6666';
+            else if (this.state === 'return') color = '#ffff66';
+            window.iconLoader.drawColoredIcon(ctx, 'drone', screenX, screenY, iconW, iconH, color, angle);
         } else {
-            ctx.fillStyle = '#66ff66';
+            // 退化为三角形
+            const size = baseSize;
+            ctx.save();
+            ctx.translate(screenX, screenY);
+            ctx.rotate(angle);
+            ctx.beginPath();
+            ctx.moveTo(size, 0);
+            ctx.lineTo(-size, -size/2);
+            ctx.lineTo(-size, size/2);
+            ctx.closePath();
+            if (this.state === 'attack') ctx.fillStyle = '#ff6666';
+            else if (this.state === 'return') ctx.fillStyle = '#ffff66';
+            else ctx.fillStyle = '#66ff66';
+            ctx.fill();
+            ctx.restore();
         }
-        
-        ctx.fill();
-        ctx.restore();
         
         // 燃料条
         const fuelPercent = this.fuel / 600;
         const barWidth = 8 * camera.zoom;
         const barHeight = 1 * camera.zoom;
         const barX = screenX - barWidth/2;
-        const barY = screenY + size + 2 * camera.zoom;
-        
+        const barY = screenY + baseSize + 2 * camera.zoom;
         ctx.fillStyle = '#333';
         ctx.fillRect(barX, barY, barWidth, barHeight);
         ctx.fillStyle = fuelPercent > 0.3 ? '#0099ff' : '#ff9900';
         ctx.fillRect(barX, barY, barWidth * fuelPercent, barHeight);
+
+        // 血量条（在燃料条下方）
+        const healthPercent = Math.max(0, this.health / this.maxHealth); 
+        const healthY = barY + barHeight + 1 * camera.zoom; // 往下偏移一点
+        ctx.fillStyle = '#333';
+        ctx.fillRect(barX, healthY, barWidth, barHeight);
+        ctx.fillStyle = healthPercent > 0.5 ? '#00cc44' : '#ff3333';
+        ctx.fillRect(barX, healthY, barWidth * healthPercent, barHeight);
     }
     
     isOffscreen() {

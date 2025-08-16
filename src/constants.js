@@ -13,7 +13,7 @@ export const ATTACK_RADIUS = 15;
 export const COLLISION_DAMAGE = 1;
 export const SHIP_SIZE = 6;
 export const RESPAWN_TIME = 30;
-export const MISSILE_ENGAGEMENT_RADIUS = 100;
+export const MISSILE_ENGAGEMENT_RADIUS = 200;
 
 export const SEPARATION_WEIGHT = 6.0;
 export const ALIGNMENT_WEIGHT = 3.0;
@@ -55,7 +55,7 @@ export const weaponProps = {
     [WEAPON_PDEF]: { damage: 0.6, cooldown: 4, range: 120, speed: 20, energyCost: 5, heatGen: 3 },
     [WEAPON_COIL]: { damage: 6.0, cooldown: 90, range: 350, speed: 30, energyCost: 25, heatGen: 12 },
     [WEAPON_MISSILE]: { damage: 4.0, cooldown: 180, range: 800, speed: 5, energyCost: 10, heatGen: 5 },
-    [WEAPON_EMP]: { damage: 0, cooldown: 120, range: 300, speed: 15, energyCost: 30, heatGen: 20 },
+    [WEAPON_EMP]: { damage: 0, cooldown: 300, range: 300, speed: 15, energyCost: 30, heatGen: 20 },
     [WEAPON_DRONE_BAY]: { damage: 0, cooldown: 300, range: 400, speed: 0, energyCost: 50, heatGen: 0 }
 };
 
