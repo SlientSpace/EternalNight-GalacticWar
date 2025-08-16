@@ -158,7 +158,9 @@ let initialZoom = 0;
 
 canvas.addEventListener('touchstart', (e) => {
     e.preventDefault();
-    camera.trackedShip = null;
+    if (!camera.manualControl) {
+        camera.trackedShip = null;
+    }
     updateTrackingDisplay();
 
     // 单指平移
