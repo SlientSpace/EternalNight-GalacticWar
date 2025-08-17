@@ -26,8 +26,8 @@ const MAX_ZOOM = 8;
 let timeScale = 1;
 
 function resizeCanvas() {
-    const containerWidth = window.innerWidth - 32;
-    const containerHeight = window.innerHeight - 150;
+    const containerWidth = window.innerWidth - 10;
+    const containerHeight = window.innerHeight - 10;
 
     let newWidth, newHeight;
     if (containerWidth / containerHeight > WORLD_ASPECT_RATIO) {
@@ -54,7 +54,8 @@ let lastMouseX = 0;
 let lastMouseY = 0;
 
 canvas.addEventListener('mousedown', (e) => {
-    if (camera.manualControl) return;
+    if (camera.manualControl || camera.trackedShip) return;
+
     isDragging = true;
     canvas.classList.add('grabbing');
     lastMouseX = e.clientX;
@@ -158,14 +159,11 @@ let initialZoom = 0;
 
 canvas.addEventListener('touchstart', (e) => {
     e.preventDefault();
-    if (!camera.manualControl) {
-        camera.trackedShip = null;
-    }
-    updateTrackingDisplay();
 
     // 单指平移
     if (e.touches.length === 1) {
-        if (camera.manualControl) {
+        if (camera.manualControl || camera.trackedShip) {
+
             // 在手动模式下，单击可能用于选择目标，这里不进行拖动
             return;
         }
@@ -324,6 +322,8 @@ window.addEventListener('keydown', (e) => {
                     camera.trackedShip.state = 'patrol';
                 }
             }
+            updateTrackingDisplay();
+            updateManualDisplay();
         }
     } else if (camera.manualControl && camera.trackedShip && camera.trackedShip.health > 0) {
     switch (e.key.toLowerCase()) {
@@ -376,94 +376,146 @@ function updateTrackingDisplay() {
         el = document.createElement('div');
         el.id = 'trackingDisplay';
         el.style.position = 'fixed';
-        el.style.left = '20px';
-        el.style.top = '20px';
+        el.style.left = '5px';
+        el.style.top = '5px';
         el.style.zIndex = 1000;
         el.style.pointerEvents = 'auto';
-        el.style.width = '320px';
+        // 竖版窄宽
+        el.style.width = '180px';
+        el.style.maxHeight = window.innerHeight - 10;
+        el.style.overflowY = 'auto';
+        el.style.boxSizing = 'border-box';
         el.style.fontFamily = 'monospace';
-        el.style.fontSize = '13px';
+        el.style.fontSize = '12px';
         el.style.color = '#e2e8f0';
-        el.style.background = 'rgba(12,14,20,0.85)';
+        el.style.background = 'rgba(12,14,20,0.88)';
         el.style.backdropFilter = 'blur(6px)';
-        el.style.border = '1px solid rgba(255,255,255,0.08)';
-        el.style.borderRadius = '10px';
-        el.style.padding = '10px 12px';
-        el.style.boxShadow = '0 8px 18px rgba(0,0,0,0.4)';
+        el.style.border = '1px solid rgba(255,255,255,0.06)';
+        el.style.borderRadius = '8px';
+        el.style.padding = '8px';
+        el.style.boxShadow = '0 8px 18px rgba(0,0,0,0.35)';
+        el.style.scrollbarWidth = 'thin'; // firefox
+
+        // 统一的高度设置函数（高度=屏幕高-10px）
+        const setPanelHeight = () => {
+            try { el.style.height = Math.max(60, window.innerHeight - 10) + 'px'; } catch (e) {}
+        };
+        setPanelHeight();
+        // 只注册一次 resize 监听
+        if (!el._heightListenerAdded) {
+            window.addEventListener('resize', setPanelHeight);
+            el._heightListenerAdded = true;
+        }
+
+        // 事件委托：只绑定一次（避免 innerHTML 重建导致点击失效）
+        if (!el._delegatedClick) {
+            el.addEventListener('click', function (ev) {
+                const btn = ev.target.closest('#untrackBtn');
+                if (!btn) return;
+                ev.preventDefault();
+                ev.stopPropagation();
+                // 解除追踪逻辑
+                try {
+                    if (typeof camera?.untrack === 'function') camera.untrack();
+                    else camera.trackedShip = null;
+                } catch (e) { try { camera.trackedShip = null; } catch(_) {} }
+                try { camera.manualControl = false; } catch(_) {}
+                try { isDragging = false; canvas.classList.remove('grabbing'); } catch (_) {}
+                // 刷新两个面板
+                try { updateTrackingDisplay(); } catch(_) {}
+                try { if (typeof updateManualDisplay === 'function') updateManualDisplay(); } catch(_) {}
+            }, true);
+            el._delegatedClick = true;
+        }
+
         document.body.appendChild(el);
+    } else {
+        // 每次调用都更新高度（以应对外部调用频繁而未触发 resize 的情况）
+        try { el.style.height = Math.max(60, window.innerHeight - 10) + 'px'; } catch (e) {}
     }
+
+    // 重新渲染 UI
+    el.innerHTML = '';
 
     if (camera.trackedShip) {
         const s = camera.trackedShip;
-        const healthPercent = ((s.health / s.maxHealth) * 100).toFixed(0);
-        const energyPercent = ((s.energy / s.maxEnergy) * 100).toFixed(0);
-        const heatPercent = ((s.heat / s.maxHeat) * 100).toFixed(0);
-        const dvPercent = ((s.deltaV / s.maxDeltaV) * 100).toFixed(0);
+        const clamp = (v, min=0, max=100) => Math.max(min, Math.min(max, v));
+        const healthPercent = clamp(((s.health / s.maxHealth) * 100) || 0).toFixed(0);
+        const energyPercent = clamp(((s.energy / s.maxEnergy) * 100) || 0).toFixed(0);
+        const heatPercent = clamp(((s.heat / s.maxHeat) * 100) || 0).toFixed(0);
+        const dvPercent = clamp(((s.deltaV / s.maxDeltaV) * 100) || 0).toFixed(0);
         const empActive = (s.empedUntil && s.empedUntil > 0) ? `${Math.ceil(s.empedUntil)} 帧` : '无';
         const jam = s.jamming ? '是' : '否';
         const droneCount = s.drones ? s.drones.length : 0;
-        const avgFuelPct = (s.drones && s.drones.length > 0) ? Math.round(s.drones.reduce((acc,d)=>acc + (d.fuel||0),0) / (600 * s.drones.length) * 100) : 0;
-        const readyMissileIdx = s.weapons.findIndex(w=>w===WEAPON_MISSILE);
+        const avgFuelPct = (s.drones && s.drones.length > 0)
+            ? Math.round(s.drones.reduce((acc,d)=>acc + (d.fuel||0),0) / (600 * s.drones.length) * 100)
+            : 0;
+        const readyMissileIdx = (s.weapons || []).findIndex(w=>w===WEAPON_MISSILE);
         const warheadTxt = (readyMissileIdx!==-1 && s.weaponWarheads && s.weaponWarheads[readyMissileIdx]) ? s.weaponWarheads[readyMissileIdx] : '—';
 
-        // helper: 进度条
         const bar = (pct,color='#4fd1c5') => `
-            <div style="height:6px; background:rgba(255,255,255,0.08); border-radius:4px; overflow:hidden;">
-                <div style="width:${pct}%; height:100%; background:${color};"></div>
+            <div style="height:6px; background:rgba(255,255,255,0.06); border-radius:3px; overflow:hidden; margin-top:4px;">
+                <div style="width:${clamp(pct)}%; height:100%; background:${color};"></div>
             </div>
         `;
 
-        // 武器区
         let weaponsHtml = '';
-        for (let i=0;i<s.weapons.length;i++){
+        for (let i=0;i<(s.weapons||[]).length;i++){
             const name = s.weapons[i];
-            const props = weaponProps[name];
-            const cooldown = s.shootCooldowns[i];
-            const percent = props.cooldown ? Math.max(0, Math.min(100, (cooldown/props.cooldown)*100)) : 0;
-            const warhead = s.weaponWarheads[i];
+            const props = (weaponProps && weaponProps[name]) ? weaponProps[name] : { damage:0, range:0, cooldown:0 };
+            const cooldown = (s.shootCooldowns && s.shootCooldowns[i]) ? s.shootCooldowns[i] : 0;
+            const percent = props.cooldown ? clamp((cooldown/props.cooldown)*100) : 0;
+            const warhead = s.weaponWarheads && s.weaponWarheads[i];
             const weaponLabel = warhead ? `${name}[${warhead}]` : name;
             weaponsHtml += `
-                <div style="margin:4px 0;">
-                    <div style="display:flex; justify-content:space-between; font-size:11px; color:#ddd;">
-                        <span>${i+1}. ${weaponLabel}</span>
-                        <span>${props.damage}dmg/${props.range}r | CD:${Math.round(cooldown)}</span>
+                <div style="margin:6px 0; font-size:11px;">
+                    <div style="display:flex; justify-content:space-between; gap:6px; color:#ddd;">
+                        <span style="flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${i+1}. ${weaponLabel}</span>
+                        <span style="flex-shrink:0; font-size:10px; color:#cbd5e0;">CD:${Math.round(cooldown)}</span>
                     </div>
                     ${bar(percent,'#f6ad55')}
                 </div>
             `;
         }
 
+        // 重新渲染 UI
         el.innerHTML = `
-            <div style="font-weight:bold; color:${fleetColors[s.fleet]}; font-size:14px; margin-bottom:4px;">
-                追踪: 舰队 ${s.fleet} ${s.typeLabel}
-            </div>
-            <div style="font-size:12px; color:#cbd5e0; margin-bottom:6px;">
-                状态: ${s.state} | 速度: ${s.velocity.mag().toFixed(1)} | 位置: (${Math.round(s.position.x)}, ${Math.round(s.position.y)})
+            <div style="font-weight:700; color:${(fleetColors && fleetColors[s.fleet]) ? fleetColors[s.fleet] : '#ffd166'}; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:6px;">
+                舰队 ${s.fleet} ${s.typeLabel}
             </div>
 
-            <div style="font-size:12px; margin-bottom:4px;">生命值 ${healthPercent}%</div>
+            <div style="font-size:11px; color:#cbd5e0; margin-bottom:6px; line-height:1.2;">
+                <div>状态: ${s.state}</div>
+                <div>速: ${s.velocity && s.velocity.mag ? s.velocity.mag().toFixed(1) : '—'}</div>
+                <div>位: ${Math.round(s.position.x)}, ${Math.round(s.position.y)}</div>
+            </div>
+
+            <div style="font-size:11px; margin-bottom:2px;">生命 ${healthPercent}%</div>
             ${bar(healthPercent,'#f56565')}
 
-            <div style="font-size:12px; margin:6px 0 4px;">能量 ${energyPercent}% (${Math.round(s.energy)}/${s.maxEnergy})</div>
+            <div style="font-size:11px; margin:6px 0 2px;">能量 ${energyPercent}% (${Math.round(s.energy)}/${s.maxEnergy})</div>
             ${bar(energyPercent,'#63b3ed')}
 
-            <div style="font-size:12px; margin:6px 0 4px;">热量 ${heatPercent}%</div>
+            <div style="font-size:11px; margin:6px 0 2px;">热量 ${heatPercent}%</div>
             ${bar(heatPercent,'#ed8936')}
 
-            <div style="font-size:12px; margin:6px 0 4px;">ΔV ${dvPercent}%</div>
+            <div style="font-size:11px; margin:6px 0 2px;">ΔV ${dvPercent}%</div>
             ${bar(dvPercent,'#9f7aea')}
 
-            <div style="font-size:11px; color:#c9f; margin:8px 0;">
-                EMP: ${empActive} | 干扰: ${jam} | 无人机: ${droneCount}/3${droneCount>0?` (燃料${avgFuelPct}%)`:''} | 战斗部: ${warheadTxt}
+            <div style="font-size:10px; color:#c9f; margin:8px 0 6px; line-height:1.2;">
+                EMP: ${empActive} · 干扰: ${jam} · 无人机: ${droneCount}/3${droneCount>0?` (${avgFuelPct}%)`:''} · 战斗部: ${warheadTxt}
             </div>
 
-            <div style="color:#ffeb3b; font-size:12px; font-weight:bold; margin-top:6px;">武器系统</div>
-            ${weaponsHtml}
+            <div style="color:#ffeb3b; font-size:12px; font-weight:700; margin-top:6px; margin-bottom:6px;">武器</div>
+            <div id="trackingWeaponList">${weaponsHtml}</div>
         `;
+
     } else {
-        el.innerHTML = `<div style="color:#e2e8f0;">未追踪</div>`;
+        el.innerHTML = `<div style="color:#e2e8f0; font-size:12px;">未追踪</div>`;
     }
 }
+
+
 
 
 
@@ -497,8 +549,8 @@ function updateManualDisplay() {
         style.textContent = `
             .manual-display {
                 position: fixed;
-                right: 20px;
-                top: 90px;
+                right: 5px;
+                top: 5px;
                 z-index: 1000;
                 pointer-events: auto;
                 font-family: monospace;
@@ -510,10 +562,12 @@ function updateManualDisplay() {
                 border: 1px solid rgba(255,255,255,0.10);
                 box-shadow: 0 6px 18px rgba(0,0,0,0.45);
                 color: #ddd;
-                min-width: 260px;
+                max-width: 300px;
+                max-height: calc(100vh - 10px);
+                overflow-y: auto;
             }
             .manual-display .title { color:#ffb000; font-weight:700; font-size:15px; }
-            .manual-display .line { font-size:12px; color:#bbb; margin-bottom:4px; }
+            .manual-display .line { font-size:12px; color:#bbb; margin-bottom:6px; }
             .manual-display .small { font-size:11px; color:#999; margin-top:8px; }
             .header-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; }
             .options-row { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
@@ -556,7 +610,6 @@ function updateManualDisplay() {
             }
             .weapon-list::-webkit-scrollbar { width:8px; height:8px; }
             .weapon-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.06); border-radius:4px; }
-            /* 新的接管切换按钮（两种状态共用） */
             .takeover-toggle {
                 padding:6px 10px;
                 border-radius:8px;
@@ -578,9 +631,7 @@ function updateManualDisplay() {
                 color:#0b1320;
                 box-shadow: 0 6px 16px rgba(30,90,220,0.25), inset 0 -1px rgba(0,0,0,0.1);
             }
-            .takeover-toggle:disabled {
-                opacity:.5; cursor:not-allowed; filter:none;
-            }
+            .takeover-toggle:disabled { opacity:.5; cursor:not-allowed; filter:none; }
         `;
         document.head.appendChild(style);
     }
@@ -600,55 +651,54 @@ function updateManualDisplay() {
     // --- shortcut keys (once) ---
     if (!document._manualDisplayKeybindsAdded) {
         document._manualDisplayKeybindsAdded = true;
-        document.addEventListener('keydown', (ev) => {
+
+        // 如果之前意外留下了 handler，先移除（保险）
+        if (document._manualDisplayKeyHandler) {
+            window.removeEventListener('keydown', document._manualDisplayKeyHandler, true);
+            document._manualDisplayKeyHandler = null;
+        }
+
+        const manualKeyHandler = function (ev) {
+            // 统一小写处理
             const key = (ev.key || '').toLowerCase();
-            // 新增 O 键作为接管切换
+
+            // 优先处理 O 键 —— 无论当前是否在 manualControl，都尝试切换（若有有效船体）
             if (key === 'o') {
-                if (camera.trackedShip && camera.trackedShip.health > 0) {
-                    camera.manualControl = !camera.manualControl;
-                    try { isDragging = false; canvas.classList.remove('grabbing'); } catch (e) {}
+                if (!(camera && camera.trackedShip && camera.trackedShip.health > 0)) return;
+                camera.manualControl = !camera.manualControl;
+                try { isDragging = false; canvas.classList.remove('grabbing'); } catch (e) {}
+                updateManualDisplay();
+                // 阻止后续同类型监听器继续处理（提高可靠性）
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                return;
+            }
+
+            // 其余按键（数字切换武器）只在接管时生效
+            if (!camera || !camera.manualControl || !camera.trackedShip) return;
+
+            // 只处理 1..9 数字键（单字符）
+            if (/^[1-9]$/.test(key)) {
+                const idx = parseInt(key, 10) - 1;
+                const s2 = camera.trackedShip;
+                if (!s2 || !s2.weapons) return;
+                if (!s2.weaponEnabled || s2.weaponEnabled.length !== s2.weapons.length) {
+                    s2.weaponEnabled = new Array(s2.weapons.length).fill(true);
+                }
+                if (idx < s2.weapons.length) {
+                    s2.weaponEnabled[idx] = !s2.weaponEnabled[idx];
                     updateManualDisplay();
                     ev.preventDefault();
-                    return;
+                    ev.stopImmediatePropagation();
                 }
             }
-            if (!camera.manualControl || !camera.trackedShip) return;
-            const s = camera.trackedShip;
-            if (!s) return;
-            if (key === 'f') {
-                s.fireControlOverride = !s.fireControlOverride;
-                updateManualDisplay();
-                ev.preventDefault();
-            } else if (key === 'b') {
-                s.autoAntiShip = !s.autoAntiShip;
-                updateManualDisplay();
-                ev.preventDefault();
-            } else if (key === 'm') {
-                s.autoAntiMissile = !s.autoAntiMissile;
-                updateManualDisplay();
-                ev.preventDefault();
-            } else if (key === 'n') {
-                s.autoAntiDrone = !s.autoAntiDrone;
-                updateManualDisplay();
-                ev.preventDefault();
-            } else {
-                const num = parseInt(key, 10);
-                if (!isNaN(num) && num >= 1) {
-                    const idx = num - 1;
-                    const s2 = camera.trackedShip;
-                    if (!s2 || !s2.weapons) return;
-                    if (!s2.weaponEnabled || s2.weaponEnabled.length !== s2.weapons.length) {
-                        s2.weaponEnabled = new Array(s2.weapons.length).fill(true);
-                    }
-                    if (idx < s2.weapons.length) {
-                        s2.weaponEnabled[idx] = !s2.weaponEnabled[idx];
-                        updateManualDisplay();
-                        ev.preventDefault();
-                    }
-                }
-            }
-        }, { capture: true });
+        };
+
+        // 保存引用以便将来移除（如果需要）
+        document._manualDisplayKeyHandler = manualKeyHandler;
+        window.addEventListener('keydown', manualKeyHandler, true);
     }
+
 
     // --- external force refresh ---
     window.manualDisplayForceRefresh = function () {
@@ -659,7 +709,6 @@ function updateManualDisplay() {
     };
 
     // --- display logic ---
-    // 如果没有追踪目标，显示未追踪并禁用切换按钮
     if (!camera.trackedShip) {
         el.innerHTML = '';
         const header = document.createElement('div'); header.className = 'header-row';
@@ -675,14 +724,13 @@ function updateManualDisplay() {
     }
 
     const s = camera.trackedShip;
-
-    // ensure weaponEnabled exists
     if (!s.weaponEnabled || s.weaponEnabled.length !== s.weapons.length) {
         s.weaponEnabled = new Array(s.weapons.length).fill(true);
     }
 
-    // snapshot for rebuild decision
+    // --- snapshot (包含 manualControl) ---
     const curSnap = snapshotForShip(s);
+    curSnap.manualControl = !!camera.manualControl; // <= 关键：把接管状态加入快照
     const last = el._lastSnapshot;
     const force = !!el._forceRefresh;
 
@@ -696,14 +744,14 @@ function updateManualDisplay() {
         last.options.autoAntiShip !== curSnap.options.autoAntiShip ||
         last.options.autoAntiMissile !== curSnap.options.autoAntiMissile ||
         last.options.autoAntiDrone !== curSnap.options.autoAntiDrone ||
-        JSON.stringify(last.weaponNames) !== JSON.stringify(curSnap.weaponNames);
+        JSON.stringify(last.weaponNames) !== JSON.stringify(curSnap.weaponNames) ||
+        last.manualControl !== curSnap.manualControl; // <= 关键：比较接管状态
 
     const targetTxt = s.manualTarget && s.manualTarget.health > 0
         ? `${s.manualTarget.typeLabel || '目标'} (${s.manualTarget.fleet})` : '无目标';
 
     // ---------- partial update ----------
     if (!needFullRebuild && el._refs) {
-        // 顶部标题与接管切换按钮
         el._refs.title.textContent = camera.manualControl ? '接管中' : '未接管';
         const tbtn = el._refs.takeoverBtn;
         if (tbtn) {
@@ -711,8 +759,8 @@ function updateManualDisplay() {
             tbtn.classList.remove('on', 'off');
             if (camera.manualControl) {
                 tbtn.classList.add('on');
-                tbtn.textContent = '解除接管 (O)';
-                tbtn.title = '解除接管 (O)';
+                tbtn.textContent = '解锁接管 (O)';
+                tbtn.title = '解锁接管 (O)';
             } else {
                 tbtn.classList.add('off');
                 tbtn.textContent = '接管 (O)';
@@ -720,13 +768,11 @@ function updateManualDisplay() {
             }
         }
 
-        // 文本
-        if (el._refs.lineTarget) el._refs.lineTarget.textContent = `目标: ${targetTxt}`;
-        if (el._refs.lineFcs) el._refs.lineFcs.textContent = `火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
-        if (el._refs.linePd)  el._refs.linePd.textContent  = `点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
+        if (el._refs.lineTarget) el._refs.lineTarget.textContent = `🎯 目标: ${targetTxt}`;
+        if (el._refs.lineFcs) el._refs.lineFcs.textContent = `⚙️ 火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
+        if (el._refs.linePd)  el._refs.linePd.textContent  = `🛡️ 点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
         if (el._refs.hint)     el._refs.hint.textContent     = '提示: WSAD 控制，空格开火，单击敌舰设为目标（快捷键：O/F/B/M/N，数字键 1.. 用于武器）';
 
-        // 选项按钮状态
         if (el._refs.optionsRow) {
             const optBtns = el._refs.optionsRow.querySelectorAll('.option-btn');
             optBtns.forEach(btn => {
@@ -747,7 +793,6 @@ function updateManualDisplay() {
             });
         }
 
-        // 武器按钮
         if (el._refs.weaponList) {
             const rows = el._refs.weaponList.querySelectorAll('.weapon-row');
             rows.forEach(row => {
@@ -770,7 +815,7 @@ function updateManualDisplay() {
     // ---------- full rebuild ----------
     el.innerHTML = '';
 
-    // Header: 标题 + 接管切换按钮（两种状态皆存在）
+    // Header
     const headerRow = document.createElement('div'); headerRow.className = 'header-row';
     const title = document.createElement('div'); title.className = 'title';
     title.textContent = camera.manualControl ? '接管中' : '未接管';
@@ -778,8 +823,8 @@ function updateManualDisplay() {
     const takeoverBtn = document.createElement('button');
     takeoverBtn.type = 'button';
     takeoverBtn.className = 'takeover-toggle ' + (camera.manualControl ? 'on' : 'off');
-    takeoverBtn.textContent = camera.manualControl ? '解除接管 (O)' : '接管 (O)';
-    takeoverBtn.title = camera.manualControl ? '解除接管 (O)' : '接管 (O)';
+    takeoverBtn.textContent = camera.manualControl ? '解锁接管 (O)' : '接管 (O)';
+    takeoverBtn.title = camera.manualControl ? '解锁接管 (O)' : '接管 (O)';
     takeoverBtn.disabled = !(camera.trackedShip && camera.trackedShip.health > 0);
     takeoverBtn.addEventListener('click', (ev) => {
         ev.stopPropagation(); ev.preventDefault();
@@ -793,22 +838,15 @@ function updateManualDisplay() {
     headerRow.appendChild(takeoverBtn);
     el.appendChild(headerRow);
 
-    // 如果未接管，显示简要信息后返回（仍保留接管按钮）
+    // If not manualControl -> minimal display (只有 header + 按钮)
     if (!camera.manualControl) {
-        const line = document.createElement('div'); line.className = 'line'; line.style.color = '#e2e8f0';
-        line.textContent = '未接管';
-        el.appendChild(line);
-        const tip = document.createElement('div'); tip.className = 'small';
-        tip.textContent = '提示: 点右侧按钮或按 O 键接管。';
-        el.appendChild(tip);
-
         el._refs = { title, takeoverBtn };
-        el._lastSnapshot = curSnap; // 保存快照也行
+        el._lastSnapshot = curSnap;
         el._forceRefresh = false;
         return;
     }
 
-    // 已接管：其余 UI
+    // 已接管 -> 全部 UI
     const lineTarget = document.createElement('div'); lineTarget.className = 'line'; lineTarget.textContent = `🎯 目标: ${targetTxt}`;
     const lineFcs = document.createElement('div'); lineFcs.className = 'line'; lineFcs.textContent = `⚙️ 火控: ${s.fireControlOverride ? '已解锁' : '限制中'} (F) | 反舰: ${s.autoAntiShip ? '开' : '关'} (B)`;
     const linePd = document.createElement('div'); linePd.className = 'line'; linePd.textContent = `🛡️ 点防: 导弹 ${s.autoAntiMissile ? '开' : '关'} (M) | 无人机 ${s.autoAntiDrone ? '开' : '关'} (N)`;
@@ -817,7 +855,7 @@ function updateManualDisplay() {
     el.appendChild(lineFcs);
     el.appendChild(linePd);
 
-    // options buttons
+    // options
     const optionsRow = document.createElement('div'); optionsRow.className = 'options-row';
     function makeOptionBtn(idSuffix, text, isOn, handler) {
         const btn = document.createElement('button');
@@ -891,6 +929,8 @@ function updateManualDisplay() {
 
 
 
+
+
 // 初始化舰艇
 function initShips() {
     ships = [];
@@ -955,7 +995,7 @@ function updateTimeScaleDisplay() {
         style.textContent = `
             .time-scale-display {
                 position: absolute;
-                right: 20px;
+                justify-content: center;
                 top: 20px;
                 z-index: 1100;
                 font-family: monospace;
