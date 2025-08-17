@@ -43,6 +43,7 @@ export class Ship {
         }
         this.primaryWeapon = this.weapons[0];
         this.laserTarget = null;
+        this.laserActiveUntil = 0; // 激光绘制的帧期限（仅攻击时显示）
         this.manualTarget = null;
         this.state = 'patrol';
         this.drones = []; // 无人机列表
@@ -341,13 +342,14 @@ export class Ship {
                     didHit = true;
                 }
                 this.laserTarget = target && didHit ? target : null; // 只有命中才保留激光束
+                this.laserActiveUntil = 5;
+                this.shootCooldowns[weaponIndex] = props.cooldown;
+                this.energy -= props.energyCost;
+                this.heat += props.heatGen;
 
             } else {
                 this.laserTarget = null;
             }
-            this.shootCooldowns[weaponIndex] = props.cooldown;
-            this.energy -= props.energyCost;
-            this.heat += props.heatGen;
             return;
         }
 
@@ -440,6 +442,11 @@ export class Ship {
         for (let i=0;i<this.shootCooldowns.length;i++){
             this.shootCooldowns[i] -= timeScale;
             if (this.shootCooldowns[i] < 0) this.shootCooldowns[i] = 0;
+        }
+        // 激光显示帧计时递减
+        if (this.laserActiveUntil > 0) {
+            this.laserActiveUntil -= timeScale;
+            if (this.laserActiveUntil < 0) this.laserActiveUntil = 0;
         }
 
         // EMP 效果
@@ -568,7 +575,7 @@ export class Ship {
             ctx.stroke();
         }
 
-        if ((this.primaryWeapon === WEAPON_PULSE_LASER || this.primaryWeapon === WEAPON_CONTINUOUS_LASER) && this.laserTarget && this.laserTarget.health > 0) {
+        if ((this.primaryWeapon === WEAPON_PULSE_LASER || this.primaryWeapon === WEAPON_CONTINUOUS_LASER) && this.laserTarget && this.laserTarget.health > 0 && this.laserActiveUntil > 0) {
             const targetScreenX = (this.laserTarget.position.x - camera.x) * camera.zoom;
             const targetScreenY = (this.laserTarget.position.y - camera.y) * camera.zoom;
             const dx = this.laserTarget.position.x - this.position.x;
