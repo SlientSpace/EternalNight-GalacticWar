@@ -28,7 +28,6 @@ let timeScale = 1;
 function resizeCanvas() {
     const containerWidth = window.innerWidth - 10;
     const containerHeight = window.innerHeight - 10;
-
     let newWidth, newHeight;
     if (containerWidth / containerHeight > WORLD_ASPECT_RATIO) {
         newHeight = containerHeight;
@@ -41,9 +40,13 @@ function resizeCanvas() {
     canvas.width = Math.min(newWidth, 1200);
     canvas.height = Math.min(newHeight, 800);
 
-    camera.zoom = Math.min(canvas.width / GAME_WORLD_WIDTH, canvas.height / GAME_WORLD_HEIGHT);
-    camera.x = (GAME_WORLD_WIDTH - (canvas.width / camera.zoom)) / 2;
-    camera.y = (GAME_WORLD_HEIGHT - (canvas.height / camera.zoom)) / 2;
+    // 仅在首次初始化时设置默认缩放，后续保持用户当前缩放
+    if (!resizeCanvas._initialized) {
+        camera.zoom = Math.min(canvas.width / GAME_WORLD_WIDTH, canvas.height / GAME_WORLD_HEIGHT);
+        camera.x = (GAME_WORLD_WIDTH - (canvas.width / camera.zoom)) / 2;
+        camera.y = (GAME_WORLD_HEIGHT - (canvas.height / camera.zoom)) / 2;
+        resizeCanvas._initialized = true;
+    }
 }
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
@@ -321,6 +324,8 @@ window.addEventListener('keydown', (e) => {
                     camera.trackedShip.manualTarget = null;
                     camera.trackedShip.state = 'patrol';
                 }
+                // 退出接管时清理控制输入
+                controlInputs.up = controlInputs.down = controlInputs.left = controlInputs.right = controlInputs.fire = false;
             }
             updateTrackingDisplay();
             updateManualDisplay();
@@ -380,19 +385,18 @@ function updateTrackingDisplay() {
         el.style.top = '5px';
         el.style.zIndex = 1000;
         el.style.pointerEvents = 'auto';
-        // 竖版窄宽
-        el.style.width = '180px';
+        // 竖版窄宽，缩小尺寸
+        el.style.width = '150px';
         el.style.maxHeight = window.innerHeight - 10;
         el.style.overflowY = 'auto';
         el.style.boxSizing = 'border-box';
         el.style.fontFamily = 'monospace';
-        el.style.fontSize = '12px';
+        el.style.fontSize = '10px';
         el.style.color = '#e2e8f0';
-        el.style.background = 'rgba(12,14,20,0.88)';
-        el.style.backdropFilter = 'blur(6px)';
-        el.style.border = '1px solid rgba(255,255,255,0.06)';
-        el.style.borderRadius = '8px';
-        el.style.padding = '8px';
+        el.style.background = 'rgba(12,14,20,0.3)';
+        el.style.border = '1px solid rgba(255,255,255,0.04)';
+        el.style.borderRadius = '6px';
+        el.style.padding = '6px';
         el.style.boxShadow = '0 8px 18px rgba(0,0,0,0.35)';
         el.style.scrollbarWidth = 'thin'; // firefox
 
@@ -554,21 +558,20 @@ function updateManualDisplay() {
                 z-index: 1000;
                 pointer-events: auto;
                 font-family: monospace;
-                font-size: 14px;
-                padding: 12px 14px;
-                background: rgba(18,20,30,0.72);
-                backdrop-filter: blur(6px);
-                border-radius: 10px;
-                border: 1px solid rgba(255,255,255,0.10);
-                box-shadow: 0 6px 18px rgba(0,0,0,0.45);
+                font-size: 12px;
+                padding: 8px 10px;
+                background: rgba(18,20,30,0.25);
+                border-radius: 8px;
+                border: 1px solid rgba(255,255,255,0.06);
+                box-shadow: 0 6px 18px rgba(0,0,0,0.35);
                 color: #ddd;
-                max-width: 300px;
+                max-width: 260px;
                 max-height: calc(100vh - 10px);
                 overflow-y: auto;
             }
-            .manual-display .title { color:#ffb000; font-weight:700; font-size:15px; }
-            .manual-display .line { font-size:12px; color:#bbb; margin-bottom:6px; }
-            .manual-display .small { font-size:11px; color:#999; margin-top:8px; }
+            .manual-display .title { color:#ffb000; font-weight:700; font-size:13px; }
+            .manual-display .line { font-size:11px; color:#bbb; margin-bottom:6px; }
+            .manual-display .small { font-size:10px; color:#999; margin-top:8px; }
             .header-row { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px; }
             .options-row { display:flex; gap:8px; margin-top:8px; flex-wrap:wrap; }
             .option-btn {
@@ -589,18 +592,18 @@ function updateManualDisplay() {
             }
             .weapon-list { margin-top:10px; display:flex; flex-direction:column; gap:8px; max-height:240px; overflow:auto; padding-right:4px; }
             .weapon-row { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:4px 2px; }
-            .weapon-label { color:#e6eef6; font-size:13px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; max-width:160px; }
+            .weapon-label { color:#e6eef6; font-size:12px; white-space:nowrap; text-overflow:ellipsis; overflow:hidden; max-width:140px; }
             .weapon-btn {
-                padding:5px 8px;
+                padding:4px 7px;
                 border-radius:6px;
                 border:1px solid rgba(255,255,255,0.06);
                 background: rgba(100,100,100,0.12);
                 color:#e6eef6;
-                font-size:13px;
+                font-size:12px;
                 cursor:pointer;
                 transition: all .14s;
                 user-select:none;
-                min-width:54px;
+                min-width:50px;
                 text-align:center;
             }
             .weapon-btn.on {
@@ -632,6 +635,79 @@ function updateManualDisplay() {
                 box-shadow: 0 6px 16px rgba(30,90,220,0.25), inset 0 -1px rgba(0,0,0,0.1);
             }
             .takeover-toggle:disabled { opacity:.5; cursor:not-allowed; filter:none; }
+            
+            /* 移动端方向控制按钮样式 */
+            .mobile-controls {
+                position: fixed;
+                bottom: 10px;
+                left: 50%;
+                transform: translateX(-50%);
+                z-index: 1000;
+                display: none;
+                pointer-events: auto;
+                display-style: flex;
+                align-items: center;
+                gap: 15px;
+            }
+            .mobile-controls.show {
+                display: flex;
+            }
+            .mobile-dpad {
+                position: relative;
+                width: 120px;
+                height: 120px;
+            }
+            .mobile-btn {
+                position: absolute;
+                width: 40px;
+                height: 40px;
+                border-radius: 8px;
+                border: 2px solid rgba(255,255,255,0.2);
+                background: rgba(40,40,40,0.8);
+                backdrop-filter: blur(4px);
+                color: #fff;
+                font-size: 18px;
+                font-weight: bold;
+                cursor: pointer;
+                user-select: none;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.1s;
+                touch-action: manipulation;
+            }
+            .mobile-btn:active {
+                background: rgba(0,180,100,0.8);
+                border-color: rgba(0,180,100,0.6);
+                transform: scale(0.95);
+            }
+            .mobile-btn.up { top: 45px; left: 50%; transform: translateX(-50%); }
+            .mobile-btn.down { top: calc(35% + 42px); left: 50%; transform: translateX(-50%); }
+            .mobile-btn.left { top: calc(50% + 45px); left: 0; transform: translateY(-50%); }
+            .mobile-btn.right { top: calc(50% + 45px); right: 0; transform: translateY(-50%); }
+            .mobile-fire {
+                width: 60px;
+                height: 60px;
+                margin-top: 50px;
+                border-radius: 50%;
+                border: 2px solid rgba(255,100,100,0.3);
+                background: rgba(60,20,20,0.8);
+                color: #ffaaaa;
+                font-size: 14px;
+                font-weight: bold;
+                cursor: pointer;
+                user-select: none;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                transition: all 0.1s;
+                touch-action: manipulation;
+            }
+            .mobile-fire:active {
+                background: rgba(255,80,80,0.8);
+                border-color: rgba(255,80,80,0.6);
+                transform: scale(0.95);
+            }
         `;
         document.head.appendChild(style);
     }
@@ -665,7 +741,15 @@ function updateManualDisplay() {
             // 优先处理 O 键 —— 无论当前是否在 manualControl，都尝试切换（若有有效船体）
             if (key === 'o') {
                 if (!(camera && camera.trackedShip && camera.trackedShip.health > 0)) return;
+                const wasManualControl = camera.manualControl;
                 camera.manualControl = !camera.manualControl;
+                
+                // 退出接管状态时，清理目标和控制输入
+                if (wasManualControl && !camera.manualControl) {
+                    camera.trackedShip.manualTarget = null;
+                    camera.trackedShip.state = 'patrol';
+                    controlInputs.up = controlInputs.down = controlInputs.left = controlInputs.right = controlInputs.fire = false;
+                }
                 try { isDragging = false; canvas.classList.remove('grabbing'); } catch (e) {}
                 updateManualDisplay();
                 // 阻止后续同类型监听器继续处理（提高可靠性）
@@ -829,7 +913,16 @@ function updateManualDisplay() {
     takeoverBtn.addEventListener('click', (ev) => {
         ev.stopPropagation(); ev.preventDefault();
         if (!(camera.trackedShip && camera.trackedShip.health > 0)) return;
+        const wasManualControl = camera.manualControl;
         camera.manualControl = !camera.manualControl;
+        
+        // 退出接管状态时，清理目标和控制输入
+        if (wasManualControl && !camera.manualControl) {
+            camera.trackedShip.manualTarget = null;
+            camera.trackedShip.state = 'patrol';
+            controlInputs.up = controlInputs.down = controlInputs.left = controlInputs.right = controlInputs.fire = false;
+        }
+        
         try { isDragging = false; canvas.classList.remove('grabbing'); } catch (e) {}
         updateManualDisplay();
     });
@@ -913,6 +1006,56 @@ function updateManualDisplay() {
     el.appendChild(hint);
 
     // refs & snapshot
+    // 移动端方向控制（底部居中）
+    let mobileControls = document.getElementById('mobileControls');
+    if (!mobileControls) {
+        mobileControls = document.createElement('div');
+        mobileControls.id = 'mobileControls';
+        mobileControls.className = 'mobile-controls';
+        const dpad = document.createElement('div'); dpad.className = 'mobile-dpad';
+        const upBtn = document.createElement('button'); upBtn.type='button'; upBtn.className = 'mobile-btn up'; upBtn.textContent = '▲';
+        const downBtn = document.createElement('button'); downBtn.type='button'; downBtn.className = 'mobile-btn down'; downBtn.textContent = '▼';
+        const leftBtn = document.createElement('button'); leftBtn.type='button'; leftBtn.className = 'mobile-btn left'; leftBtn.textContent = '◀';
+        const rightBtn = document.createElement('button'); rightBtn.type='button'; rightBtn.className = 'mobile-btn right'; rightBtn.textContent = '▶';
+        dpad.appendChild(upBtn); dpad.appendChild(downBtn); dpad.appendChild(leftBtn); dpad.appendChild(rightBtn);
+        const fireBtn = document.createElement('button'); fireBtn.type='button'; fireBtn.className = 'mobile-fire'; fireBtn.textContent = '开火';
+        // 先插入开火键，再插入方向键，实现横向排列时开火键在左
+        mobileControls.appendChild(fireBtn);
+        mobileControls.appendChild(dpad);
+        document.body.appendChild(mobileControls);
+
+        const setState = (key, val)=>{ controlInputs[key] = val; };
+        const bindPressable = (el, key) => {
+            const onDown = (ev)=>{ ev.preventDefault(); ev.stopPropagation(); setState(key,true); };
+            const onUp = (ev)=>{ ev.preventDefault(); ev.stopPropagation(); setState(key,false); };
+            el.addEventListener('touchstart', onDown, {passive:false});
+            el.addEventListener('touchend', onUp, {passive:false});
+            el.addEventListener('touchcancel', onUp, {passive:false});
+            el.addEventListener('pointerdown', onDown, {passive:false});
+            el.addEventListener('pointerup', onUp, {passive:false});
+            el.addEventListener('pointerleave', onUp, {passive:false});
+            el.addEventListener('mousedown', onDown);
+            el.addEventListener('mouseup', onUp);
+            el.addEventListener('mouseleave', onUp);
+        };
+        bindPressable(upBtn, 'up');
+        bindPressable(downBtn, 'down');
+        bindPressable(leftBtn, 'left');
+        bindPressable(rightBtn, 'right');
+        bindPressable(fireBtn, 'fire');
+        mobileControls._refs = { upBtn, downBtn, leftBtn, rightBtn, fireBtn };
+    }
+
+    // 仅在接管模式 且 非桌面端 才显示
+    const isDesktop = !(/Mobi|Android|iPhone|iPad|iPod|Windows Phone/i.test(navigator.userAgent));
+    if (camera.manualControl && camera.trackedShip && !isDesktop) {
+        mobileControls.classList.add('show');
+    } else {
+        mobileControls.classList.remove('show');
+        // 离开时确保松开
+        controlInputs.up = controlInputs.down = controlInputs.left = controlInputs.right = controlInputs.fire = false;
+    }
+
     el._refs = {
         title,
         takeoverBtn,
@@ -921,7 +1064,8 @@ function updateManualDisplay() {
         linePd,
         optionsRow,
         weaponList,
-        hint
+        hint,
+        mobileControls
     };
     el._lastSnapshot = curSnap;
     el._forceRefresh = false;
@@ -1001,8 +1145,7 @@ function updateTimeScaleDisplay() {
                 font-family: monospace;
                 font-size: 14px;
                 padding: 8px 10px;
-                background: rgba(12,14,20,0.78);
-                backdrop-filter: blur(4px);
+                background: rgba(12,14,20,0);
                 border-radius: 8px;
                 border: 1px solid rgba(255,255,255,0.08);
                 color: #e6eef6;

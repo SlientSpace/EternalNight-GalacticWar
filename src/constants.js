@@ -1,7 +1,8 @@
 // 全局常量与配置
 export const GAME_WORLD_WIDTH = 5000;
-export const GAME_WORLD_HEIGHT = 3000;
+export const GAME_WORLD_HEIGHT = GAME_WORLD_WIDTH * (window.innerHeight - 10) / (window.innerWidth - 10);
 export const WORLD_ASPECT_RATIO = GAME_WORLD_WIDTH / GAME_WORLD_HEIGHT;
+
 
 export const NUM_SHIPS = 500;
 export const MAX_FORCE = 0.05;

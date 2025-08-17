@@ -107,6 +107,9 @@ export class Ship {
     }
 
     updateAI(ships, projectiles, inputs = null) {
+        if (this.laserTarget && this.laserTarget.health <= 0) {
+            this.laserTarget = null;
+        }
         // 如果有手动输入，处理手动控制逻辑
         if (inputs) {
             if (inputs.up) this.velocity.y -= 0.15;
