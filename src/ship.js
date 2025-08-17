@@ -1,7 +1,7 @@
 import { Vector } from './vector.js';
 import { weaponProps, WEAPON_PULSE_LASER, WEAPON_CONTINUOUS_LASER, WEAPON_RAPID_ENERGY, WEAPON_PDEF, WEAPON_COIL, WEAPON_MISSILE, WEAPON_EMP, WEAPON_DRONE_BAY, shipTypes, fleetColors } from './constants.js';
 import { EnergyProjectile, KineticProjectile, SeekingProjectile, EMPProjectile, Drone } from './projectiles.js';
-import { MAX_FORCE, PERCEPTION_RADIUS, SEPARATION_RADIUS, SEPARATION_WEIGHT, ALIGNMENT_WEIGHT, COHESION_WEIGHT, ATTACK_WEIGHT, FLEE_WEIGHT, MISSILE_ENGAGEMENT_RADIUS, HEAT_DISSIPATION_RATE, ENERGY_REGEN_RATE, DELTA_V_CONSUMPTION_RATE, OVERHEATING_DAMAGE, EMP_DURATION, MAX_ANGULAR_SPEED } from './constants.js';
+import { LOGI_SEARCH_RANGE, LOGI_REPAIR_RATE, LOGI_SELF_ENERGY_COST, LOGI_SUPPLY_ENERGY, LOGI_SUPPLY_DV, LOGI_SUPPLY_COOL, MAX_FORCE, PERCEPTION_RADIUS, SEPARATION_RADIUS, SEPARATION_WEIGHT, ALIGNMENT_WEIGHT, COHESION_WEIGHT, ATTACK_WEIGHT, FLEE_WEIGHT, MISSILE_ENGAGEMENT_RADIUS, HEAT_DISSIPATION_RATE, ENERGY_REGEN_RATE, DELTA_V_CONSUMPTION_RATE, OVERHEATING_DAMAGE, EMP_DURATION, MAX_ANGULAR_SPEED } from './constants.js';
 
 export class Ship {
     constructor(x,y,fleet, shipTypeKey) {
@@ -30,16 +30,25 @@ export class Ship {
         this.empedUntil = 0; // EMP 持续时间
         this.jamming = false; // 是否被干扰
 
+        // 后勤属性
+        this.isLogistics = !!t.logisticsType;
+        this.logisticsType = t.logisticsType || null; // 'supply' | 'repair' | null
+        this.logisticsRadius = t.logisticsRadius || 0;
+        this.autoLogistics = true; // 自动补给/维修开关，默认开启
+        this.logisticsTarget = null; // 指定的补给/维修目标（友军）
+
         // 武器槽：随机分配（并为导弹分配战斗部）
         this.weapons = [];
         this.weaponWarheads = [];
         this.shootCooldowns = [];
-        const weaponTypes = [WEAPON_PULSE_LASER, WEAPON_CONTINUOUS_LASER, WEAPON_RAPID_ENERGY, WEAPON_PDEF, WEAPON_COIL, WEAPON_MISSILE, WEAPON_EMP, WEAPON_DRONE_BAY];
-        for (let i = 0; i < this.weaponSlots; i++) {
-            const wt = weaponTypes[Math.floor(Math.random()*weaponTypes.length)];
-            this.weapons.push(wt);
-            this.weaponWarheads.push(wt === WEAPON_MISSILE ? null : null); // warhead 会由外部 init 替代（或 utils 中处理）
-            this.shootCooldowns.push(0);
+        if (this.weaponSlots > 0) {
+            const weaponTypes = [WEAPON_PULSE_LASER, WEAPON_CONTINUOUS_LASER, WEAPON_RAPID_ENERGY, WEAPON_PDEF, WEAPON_COIL, WEAPON_MISSILE, WEAPON_EMP, WEAPON_DRONE_BAY];
+            for (let i = 0; i < this.weaponSlots; i++) {
+                const wt = weaponTypes[Math.floor(Math.random()*weaponTypes.length)];
+                this.weapons.push(wt);
+                this.weaponWarheads.push(wt === WEAPON_MISSILE ? null : null);
+                this.shootCooldowns.push(0);
+            }
         }
         this.primaryWeapon = this.weapons[0];
         this.laserTarget = null;
@@ -52,6 +61,15 @@ export class Ship {
         this.autoAntiDrone = false; // 自动反无人机开关
         this.autoAntiShip = false; // 自动反舰开关
         this.weaponEnabled = new Array(this.weaponSlots).fill(true); // 武器启用状态（接管模式下可控制）
+
+        // 对于后勤舰，无武器的情况下，确保数组为空且标志安全
+        if (this.weaponSlots === 0) {
+            this.weapons = [];
+            this.weaponWarheads = [];
+            this.shootCooldowns = [];
+            this.primaryWeapon = null;
+            this.weaponEnabled = [];
+        }
     }
 
     applyForce(force){ this.acceleration.add(force); }
@@ -179,7 +197,73 @@ export class Ship {
             return; // 手动控制时不执行AI逻辑
         }
 
-        // AI控制逻辑
+        // --- 后勤舰专用 AI：跟随/靠近需要支援的友军 ---
+        if (this.isLogistics) {
+            // 确定后勤目标：优先手动目标（且为友军、存活），否则自动搜索
+            let target = null;
+            if (this.manualTarget && this.manualTarget.health > 0 && this.manualTarget.fleet === this.fleet && this.manualTarget !== this) {
+                target = this.manualTarget;
+            } else if (this.autoLogistics) {
+                let best = null; let bestScore = -Infinity;
+                for (const ally of (window.__allShips || ships)) {
+                    if (!ally || ally === this || ally.fleet !== this.fleet || ally.health <= 0) continue;
+                    const dx = Math.abs(this.position.x - ally.position.x);
+                    const dy = Math.abs(this.position.y - ally.position.y);
+                    const distanceX = Math.min(dx, 5000 - dx);
+                    const distanceY = Math.min(dy, 3000 - dy);
+                    const d = Math.hypot(distanceX, distanceY);
+                    if (d > LOGI_SEARCH_RANGE) continue;
+                    let need = 0;
+                    if (this.logisticsType === 'repair') {
+                        need = (ally.maxHealth - ally.health);
+                    } else if (this.logisticsType === 'supply') {
+                        // 需求：能量缺口 + ΔV 缺口 + 过热（越热越需要）
+                        const energyNeed = (ally.maxEnergy - ally.energy);
+                        const dvNeed = (ally.maxDeltaV - ally.deltaV) * 0.2; // ΔV 权重稍低
+                        const heatNeed = (ally.heat || 0) * 0.5; // 正向（越热越需要冷却）
+                        need = energyNeed + dvNeed + heatNeed;
+                    }
+                    // 根据需求/距离打分（越近越高，越需要越高）
+                    const score = need - d * 0.5;
+                    if (score > bestScore && need > 0.5) { bestScore = score; best = ally; }
+                }
+                target = best;
+            }
+
+            // 机动：保持在半径 80% ~ 100% 区间内
+            const separation = this.separation(ships);
+            const alignment = this.alignment(ships);
+            const cohesion = this.cohesion(ships);
+            separation.mult(SEPARATION_WEIGHT);
+            alignment.mult(ALIGNMENT_WEIGHT);
+            cohesion.mult(COHESION_WEIGHT);
+            this.applyForce(separation);
+
+            if (target) {
+                const dx = this.position.x - target.position.x;
+                const dy = this.position.y - target.position.y;
+                const distanceX = Math.min(Math.abs(dx), 5000 - Math.abs(dx));
+                const distanceY = Math.min(Math.abs(dy), 3000 - Math.abs(dy));
+                const d = Math.hypot(distanceX, distanceY);
+                const desiredDist = this.logisticsRadius * 0.85;
+                if (d > desiredDist) {
+                    const seekForce = this.seek(target.position);
+                    seekForce.mult(ATTACK_WEIGHT * 0.6);
+                    this.applyForce(seekForce);
+                } else {
+                    // 稍微配平，避免贴脸
+                    this.applyForce(alignment);
+                    this.applyForce(cohesion);
+                }
+            } else {
+                // 无目标：常规编队巡航
+                this.applyForce(alignment);
+                this.applyForce(cohesion);
+            }
+            return; // 后勤舰不参与常规战斗 AI
+        }
+
+        // AI控制逻辑（战斗舰）
         let closestEnemy = null; let minDistance = Infinity;
         for (const other of ships) {
             if (other.fleet !== this.fleet && other.health > 0) {
@@ -472,6 +556,87 @@ export class Ship {
             if (this.deltaV < 0) this.deltaV = 0;
         }
 
+        // --- 后勤效果执行：在半径范围内对友军进行补给/维修 ---
+        if (this.isLogistics && this.logisticsRadius > 0) {
+            const allies = window.__allShips || [];
+            // 目标优先级：手动指定（manualTarget）> logisticsTarget > 自动
+            let target = null;
+            if (this.manualTarget && this.manualTarget.health > 0 && this.manualTarget.fleet === this.fleet && this.manualTarget !== this) {
+                target = this.manualTarget;
+            } else if (this.logisticsTarget && this.logisticsTarget.health > 0 && this.logisticsTarget.fleet === this.fleet && this.logisticsTarget !== this) {
+                target = this.logisticsTarget;
+            }
+            if (!target && this.autoLogistics) {
+                // 自动从半径内挑一个最需要的
+                let best = null; let bestNeed = 0;
+                for (const ally of allies) {
+                    if (!ally || ally === this || ally.fleet !== this.fleet || ally.health <= 0) continue;
+                    const dx = Math.abs(this.position.x - ally.position.x);
+                    const dy = Math.abs(this.position.y - ally.position.y);
+                    const distanceX = Math.min(dx, 5000 - dx);
+                    const distanceY = Math.min(dy, 3000 - dy);
+                    const d = Math.hypot(distanceX, distanceY);
+                    if (d > this.logisticsRadius) continue;
+                    let need = 0;
+                    if (this.logisticsType === 'repair') {
+                        need = (ally.maxHealth - ally.health);
+                    } else if (this.logisticsType === 'supply') {
+                        const energyNeed = (ally.maxEnergy - ally.energy);
+                        const dvNeed = (ally.maxDeltaV - ally.deltaV) * 0.25;
+                        const heatNeed = (ally.heat || 0) * 0.4;
+                        need = energyNeed + dvNeed + heatNeed;
+                    }
+                    if (need > bestNeed) { bestNeed = need; best = ally; }
+                }
+                target = best;
+            }
+            if (target) {
+                const dx = Math.abs(this.position.x - target.position.x);
+                const dy = Math.abs(this.position.y - target.position.y);
+                const distanceX = Math.min(dx, 5000 - dx);
+                const distanceY = Math.min(dy, 3000 - dy);
+                const d = Math.hypot(distanceX, distanceY);
+                if (d <= this.logisticsRadius && this.energy > 1) {
+                    if (this.logisticsType === 'repair') {
+                        const amount = LOGI_REPAIR_RATE * timeScale;
+                        const spend = amount * LOGI_SELF_ENERGY_COST;
+                        const real = Math.min(amount, Math.max(0, target.maxHealth - target.health));
+                        const energyAvail = Math.max(0, this.energy - 0); // 不透支
+                        const ratio = spend > 0 ? Math.min(1, energyAvail / spend) : 1;
+                        const applied = real * ratio;
+                        target.health = Math.min(target.maxHealth, target.health + applied);
+                        this.energy = Math.max(0, this.energy - applied * LOGI_SELF_ENERGY_COST);
+                    } else if (this.logisticsType === 'supply') {
+                        // 能量
+                        let eAmt = LOGI_SUPPLY_ENERGY * timeScale;
+                        let dvAmt = LOGI_SUPPLY_DV * timeScale;
+                        let coolAmt = LOGI_SUPPLY_COOL * timeScale;
+                        // 根据可用能量缩放
+                        let spend = (eAmt + dvAmt*0.05 + coolAmt*0.02) * LOGI_SELF_ENERGY_COST; // ΔV 和冷却消耗相对少
+                        const energyAvail = Math.max(0, this.energy - 0);
+                        const ratio = spend > 0 ? Math.min(1, energyAvail / spend) : 1;
+                        eAmt *= ratio; dvAmt *= ratio; coolAmt *= ratio; spend *= ratio;
+                        // 施加
+                        if (target.energy < target.maxEnergy) {
+                            const realE = Math.min(eAmt, target.maxEnergy - target.energy);
+                            target.energy += realE;
+                            this.energy = Math.max(0, this.energy - realE * LOGI_SELF_ENERGY_COST);
+                        }
+                        if (target.deltaV < target.maxDeltaV) {
+                            const realDV = Math.min(dvAmt, target.maxDeltaV - target.deltaV);
+                            target.deltaV += realDV;
+                            this.energy = Math.max(0, this.energy - realDV * 0.05 * LOGI_SELF_ENERGY_COST);
+                        }
+                        if (target.heat > 0) {
+                            const realCool = Math.min(coolAmt, target.heat);
+                            target.heat = Math.max(0, target.heat - realCool);
+                            this.energy = Math.max(0, this.energy - realCool * 0.02 * LOGI_SELF_ENERGY_COST);
+                        }
+                    }
+                }
+            }
+        }
+
         // 运动更新
         const prevVel = this.velocity.clone();
         const scaledAcceleration = this.acceleration.clone().mult(timeScale);
@@ -575,7 +740,23 @@ export class Ship {
             ctx.stroke();
         }
 
-        if ((this.primaryWeapon === WEAPON_PULSE_LASER || this.primaryWeapon === WEAPON_CONTINUOUS_LASER) && this.laserTarget && this.laserTarget.health > 0 && this.laserActiveUntil > 0) {
+        // 新增：后勤半径圈（仅在接管该后勤舰时显示）
+        if (isControlled && this.isLogistics && this.logisticsRadius > 0) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.arc(screenX, screenY, this.logisticsRadius * camera.zoom, 0, Math.PI * 2);
+            const stroke = this.logisticsType === 'repair'
+                ? 'rgba(60, 255, 140, 0.35)'
+                : 'rgba(80, 180, 255, 0.35)'; // supply 默认蓝色
+            ctx.strokeStyle = stroke;
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 6]);
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        if ((this.weapons.includes(WEAPON_PULSE_LASER) || this.weapons.includes(WEAPON_CONTINUOUS_LASER)) && this.laserTarget && this.laserTarget.health > 0 && this.laserActiveUntil > 0) {
+
             const targetScreenX = (this.laserTarget.position.x - camera.x) * camera.zoom;
             const targetScreenY = (this.laserTarget.position.y - camera.y) * camera.zoom;
             const dx = this.laserTarget.position.x - this.position.x;

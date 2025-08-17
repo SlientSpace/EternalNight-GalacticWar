@@ -48,7 +48,9 @@ class IconLoader {
             'destroyer': 'assets/objects_icon/Destroyer.png',
             'frigate': 'assets/objects_icon/Frigate.png',
             'missile': 'assets/objects_icon/Missile.png',
-            'drone': 'assets/objects_icon/Drone.png'
+            'drone': 'assets/objects_icon/Drone.png',
+            'supply': 'assets/objects_icon/Supply.png',
+            'repair': 'assets/objects_icon/Repair.png'
         };
 
         const loadPromises = Object.entries(iconPaths).map(([name, path]) =>

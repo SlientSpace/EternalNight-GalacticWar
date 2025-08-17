@@ -51,7 +51,7 @@ export const WARHEAD_EXPLOSION_RADIUS = {
 // 武器属性表
 export const weaponProps = {
     [WEAPON_PULSE_LASER]: { damage: 2.0, cooldown: 30, range: 220, speed: null, energyCost: 15, heatGen: 8 },
-    [WEAPON_CONTINUOUS_LASER]: { damage: 0.45, cooldown: 1, range: 180, speed: null, energyCost: 3, heatGen: 2 },
+    [WEAPON_CONTINUOUS_LASER]: { damage: 0.1, cooldown: 1, range: 180, speed: null, energyCost: 3, heatGen: 2 },
     [WEAPON_RAPID_ENERGY]: { damage: 0.9, cooldown: 6, range: 200, speed: 20, energyCost: 8, heatGen: 4 },
     [WEAPON_PDEF]: { damage: 0.6, cooldown: 4, range: 120, speed: 20, energyCost: 5, heatGen: 3 },
     [WEAPON_COIL]: { damage: 6.0, cooldown: 90, range: 350, speed: 30, energyCost: 25, heatGen: 12 },
@@ -75,11 +75,21 @@ export const OVERHEATING_DAMAGE = 2;
 export const EMP_DURATION = 180;
 export const EMP_RANGE = 40;
 
+//后勤常量
+export const LOGI_SEARCH_RANGE = 200;
+export const LOGI_REPAIR_RATE = 1;
+export const LOGI_SELF_ENERGY_COST = 1;
+export const LOGI_SUPPLY_ENERGY = 1;
+export const LOGI_SUPPLY_DV = 1;
+export const LOGI_SUPPLY_COOL = 1;
+
 // 舰种
 export const shipTypes = {
     'frigate': { label: '护卫舰 Frigate', maxHealth: 300, maxSpeed: 2.8, weaponSlots: 1, maxEnergy: 80, maxHeat: 60, maxDeltaV: 800 },
     'destroyer': { label: '驱逐舰 Destroyer', maxHealth: 500, maxSpeed: 2.2, weaponSlots: 2, maxEnergy: 120, maxHeat: 80, maxDeltaV: 1200 },
     'cruiser': { label: '巡洋舰 Cruiser', maxHealth: 900, maxSpeed: 1.6, weaponSlots: 3, maxEnergy: 200, maxHeat: 120, maxDeltaV: 2000 },
     'battlecruiser': { label: '战巡舰 Battlecruiser', maxHealth: 1400, maxSpeed: 1.3, weaponSlots: 4, maxEnergy: 300, maxHeat: 160, maxDeltaV: 2800 },
-    'battleship': { label: '战列舰 Battleship', maxHealth: 2200, maxSpeed: 0.9, weaponSlots: 5, maxEnergy: 400, maxHeat: 200, maxDeltaV: 3500 }
+    'battleship': { label: '战列舰 Battleship', maxHealth: 2200, maxSpeed: 0.9, weaponSlots: 5, maxEnergy: 400, maxHeat: 200, maxDeltaV: 3500 },
+    'supply': { label: '补给舰 Supply Ship', maxHealth: 400, maxSpeed: 1.8, weaponSlots: 0, maxEnergy: 150, maxHeat: 50, maxDeltaV: 1500, logisticsType: 'supply', logisticsRadius: 80 },
+    'repair': { label: '维修舰 Repair Ship', maxHealth: 350, maxSpeed: 1.9, weaponSlots: 0, maxEnergy: 140, maxHeat: 45, maxDeltaV: 1400, logisticsType: 'repair', logisticsRadius: 75 }
 };
