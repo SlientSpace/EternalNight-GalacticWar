@@ -109,7 +109,7 @@ export class SeekingProjectile extends Weapon {
 
             let closest=null; let minD=Infinity;
             for (const o of ships) {
-                if (o.fleet !== this.fleet && o.health > 0 && (this.target.alive == undefined || this.target.alive == true)) {
+                if (o.fleet !== this.fleet && o.health > 0 && (this.target.alive == undefined || this.target.alive == null || this.target.alive == true)) {
                     const dx = this.position.x - o.position.x;
                     const dy = this.position.y - o.position.y;
                     const d = Math.sqrt(dx*dx + dy*dy);
