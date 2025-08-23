@@ -105,7 +105,9 @@ export class SeekingProjectile extends Weapon {
     }
     
     update(ships, timeScale){
-        if (!this.target || (this.target.health !== undefined && this.target.health <= 0) || (this.target.alive !== undefined && this.target.alive == false)) {
+        if (!this.target || 
+        (this.target.health !== undefined && this.target.health <= 0) || 
+        (this.target.alive !== undefined && this.target.alive == false)) {
 
             let closest=null; let minD=Infinity;
             for (const o of ships) {
