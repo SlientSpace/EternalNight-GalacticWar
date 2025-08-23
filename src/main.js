@@ -163,7 +163,7 @@ canvas.addEventListener('click', (e) => {
         const wrapDx = Math.min(dx, GAME_WORLD_WIDTH - dx);
         const wrapDy = Math.min(dy, GAME_WORLD_HEIGHT - dy);
         const dist = Math.sqrt(wrapDx * wrapDx + wrapDy * wrapDy);
-        if (dist < (SHIP_SIZE * 3)) {
+        if (dist < (SHIP_SIZE * 3 / camera.zoom)) {
             found = s;
             break;
         }
@@ -304,7 +304,7 @@ function handleTap(e, isDoubleClick) {
         const wrapDx = Math.min(dx, GAME_WORLD_WIDTH - dx);
         const wrapDy = Math.min(dy, GAME_WORLD_HEIGHT - dy);
         const dist = Math.sqrt(wrapDx * wrapDx + wrapDy * wrapDy);
-        if (dist < (SHIP_SIZE * 3)) {
+        if (dist < (SHIP_SIZE * 3 / camera.zoom)) {
             found = s;
             break;
         }
