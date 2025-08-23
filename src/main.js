@@ -29,7 +29,8 @@
 import {
     GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT, WORLD_ASPECT_RATIO, EMP_RANGE,
     NUM_SHIPS, SHIP_SIZE, RESPAWN_TIME, fleetColors, particleColors,
-    weaponProps, WEAPON_MISSILE, MISSILE_ENGAGEMENT_RADIUS, WARHEAD_EXPLOSION_RADIUS
+    weaponProps, WEAPON_MISSILE, MISSILE_ENGAGEMENT_RADIUS, WARHEAD_EXPLOSION_RADIUS, 
+    MAX_PARTICLES, MIN_ZOOM, MAX_ZOOM
 } from './constants.js';
 import { Vector } from './vector.js';
 import { Particle, KineticProjectile, SeekingProjectile, EnergyProjectile, EMPProjectile, Drone } from './projectiles.js';
@@ -48,8 +49,6 @@ let respawnCooldown2 = RESPAWN_TIME;
 
 const camera = { x: 0, y: 0, zoom: 1, trackedShip: null, manualControl: false };
 window.camera = camera;
-const MIN_ZOOM = 0.1;
-const MAX_ZOOM = 8;
 let timeScale = 1;
 
 function resizeCanvas() {
@@ -491,11 +490,18 @@ function updateTrackingDisplay() {
         const energyPercent = clamp(((s.energy / s.maxEnergy) * 100) || 0).toFixed(0);
         const heatPercent = clamp(((s.heat / s.maxHeat) * 100) || 0).toFixed(0);
         const dvPercent = clamp(((s.deltaV / s.maxDeltaV) * 100) || 0).toFixed(0);
+        // 弹药百分比（仅当有弹药容量时）
+        const ammoPercent = (typeof s.ammoCapacity === 'number' && s.ammoCapacity > 0)
+            ? clamp((((s.ammoVolume || 0) / s.ammoCapacity) * 100) || 0).toFixed(0)
+            : null;
         const empActive = (s.empedUntil && s.empedUntil > 0) ? `${Math.ceil(s.empedUntil)} 帧` : '无';
         const jam = s.jamming ? '是' : '否';
         const droneCount = s.drones ? s.drones.length : 0;
         const avgFuelPct = (s.drones && s.drones.length > 0)
-            ? Math.round(s.drones.reduce((acc,d)=>acc + (d.fuel||0),0) / (600 * s.drones.length) * 100)
+            ? Math.round(
+                (s.drones.reduce((acc,d)=>acc + (d.deltaV||0),0) /
+                 (s.drones.reduce((acc,d)=>acc + (typeof d.maxDeltaV === 'number' ? d.maxDeltaV : 600),0) || 1)) * 100
+              )
             : 0;
         const readyMissileIdx = (s.weapons || []).findIndex(w=>w===WEAPON_MISSILE);
         const warheadTxt = (readyMissileIdx!==-1 && s.weaponWarheads && s.weaponWarheads[readyMissileIdx]) ? s.weaponWarheads[readyMissileIdx] : '—';
@@ -549,8 +555,13 @@ function updateTrackingDisplay() {
             <div style="font-size:11px; margin:6px 0 2px;">ΔV ${dvPercent}%</div>
             ${bar(dvPercent,'#9f7aea')}
 
+            ${ammoPercent!==null?`
+            <div style="font-size:11px; margin:6px 0 2px;">弹药 ${ammoPercent}% (${Math.round(s.ammoVolume||0)}/${s.ammoCapacity})</div>
+            ${bar(ammoPercent,'#f6e05e')}
+            `:''}
+
             <div style="font-size:10px; color:#c9f; margin:8px 0 6px; line-height:1.2;">
-                EMP: ${empActive} · 干扰: ${jam} · 无人机: ${droneCount}/3${droneCount>0?` (${avgFuelPct}%)`:''} · 战斗部: ${warheadTxt}
+                EMP: ${empActive} · 干扰: ${jam} · 无人机: ${droneCount}${droneCount>0?` (${avgFuelPct}%)`:''} · 战斗部: ${warheadTxt}
             </div>
 
             <div style="color:#ffeb3b; font-size:12px; font-weight:700; margin-top:6px; margin-bottom:6px;">武器</div>
@@ -1274,7 +1285,7 @@ function updateManualDisplay() {
 function initShips() {
     ships = [];
     for (let i = 0; i < NUM_SHIPS/2; i++) {
-        const s = new Ship(Math.random()*(GAME_WORLD_WIDTH/2), Math.random()*GAME_WORLD_HEIGHT, 'fleet1', randomShipType());
+        const s = new Ship(Math.random()*(GAME_WORLD_WIDTH/5), Math.random()*GAME_WORLD_HEIGHT, 'fleet1', randomShipType());
         // 为导弹槽随机分配战斗部
         for (let j=0;j<s.weapons.length;j++){
             if (s.weapons[j] === WEAPON_MISSILE) s.weaponWarheads[j] = randomMissileWarhead();
@@ -1282,7 +1293,7 @@ function initShips() {
         ships.push(s);
     }
     for (let i = 0; i < NUM_SHIPS/2; i++) {
-        const s = new Ship((GAME_WORLD_WIDTH/2) + Math.random()*(GAME_WORLD_WIDTH/2), Math.random()*GAME_WORLD_HEIGHT, 'fleet2', randomShipType());
+        const s = new Ship(GAME_WORLD_WIDTH - Math.random()*(GAME_WORLD_WIDTH/5), Math.random()*GAME_WORLD_HEIGHT, 'fleet2', randomShipType());
         for (let j=0;j<s.weapons.length;j++){
             if (s.weapons[j] === WEAPON_MISSILE) s.weaponWarheads[j] = randomMissileWarhead();
         }
@@ -1299,12 +1310,9 @@ window.__allProjectiles = window.__allProjectiles || [];
 window.__allShips = ships;
 window.__allProjectiles = projectiles;
 
-// 限制粒子总量，避免过度渲染
-const MAX_PARTICLES = 1800;
-
 function createExplosion(x,y,color,scale=1){
     // 根据规模确定基础数量，并限制总量
-    const base = 10;
+    const base = 2;
     const toSpawn = Math.min(MAX_PARTICLES - particles.length, Math.max(1, Math.floor(base * scale)));
     for (let i=0; i<toSpawn; i++) {
         particles.push(Particle.obtain(x, y, color));
@@ -1491,8 +1499,9 @@ function gameLoop() {
     for (let i=0;i<projectiles.length;i++){
         const p = projectiles[i];
         // 更新弹丸并检查是否需要移除
-        if (p.constructor.name === 'SeekingProjectile' && p.fuel <= 0) { projectilesToRemoveIndices.add(i); continue; }
+        if (p.constructor.name === 'SeekingProjectile' && p.deltaV <= 0) { projectilesToRemoveIndices.add(i); continue; }
         if (p.constructor.name === 'SeekingProjectile' && p.health <= 0) { projectilesToRemoveIndices.add(i); continue; }
+        if (p.constructor.name === 'SeekingProjectile' && p.alive == false) { projectilesToRemoveIndices.add(i); continue; }
         if (p.isOffscreen()) { projectilesToRemoveIndices.add(i); continue; }
         if (p.constructor.name === 'SeekingProjectile') p.update(ships, timeScale);
         else if (p.constructor.name === 'Drone') p.update(ships, timeScale);
@@ -1698,7 +1707,11 @@ function gameLoop() {
         if (camera.manualControl && camera.trackedShip === ship) ship.updateAI(ships, projectiles, controlInputs);
         ship.update(timeScale);
         ship.edges(GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT);
-        ship.draw(ctx, camera, canvas, SHIP_SIZE, particleColors);
+        if (camera.zoom > 1){
+            ship.draw(ctx, camera, canvas, SHIP_SIZE, particleColors);
+        }else{
+            ship.draw(ctx, camera, canvas, SHIP_SIZE/camera.zoom, particleColors);
+        }
     }
 
     for (let i=particles.length-1;i>=0;i--){

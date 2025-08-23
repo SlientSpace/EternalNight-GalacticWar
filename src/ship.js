@@ -1,7 +1,7 @@
 import { Vector } from './vector.js';
-import { weaponProps, WEAPON_PULSE_LASER, WEAPON_CONTINUOUS_LASER, WEAPON_RAPID_ENERGY, WEAPON_PDEF, WEAPON_COIL, WEAPON_MISSILE, WEAPON_EMP, WEAPON_DRONE_BAY, shipTypes, fleetColors } from './constants.js';
+import { weaponProps, WEAPON_PULSE_LASER, WEAPON_CONTINUOUS_LASER, WEAPON_RAPID_ENERGY, WEAPON_PDEF, WEAPON_COIL, WEAPON_MISSILE, WEAPON_EMP, WEAPON_DRONE_BAY, shipTypes, fleetColors, AMMO_VOLUME_PER_SHOT, DEFAULT_SHIP_AMMO_CAPACITY } from './constants.js';
 import { EnergyProjectile, KineticProjectile, SeekingProjectile, EMPProjectile, Drone } from './projectiles.js';
-import { LOGI_SEARCH_RANGE, LOGI_REPAIR_RATE, LOGI_SELF_ENERGY_COST, LOGI_SUPPLY_ENERGY, LOGI_SUPPLY_DV, LOGI_SUPPLY_COOL, MAX_FORCE, PERCEPTION_RADIUS, SEPARATION_RADIUS, SEPARATION_WEIGHT, ALIGNMENT_WEIGHT, COHESION_WEIGHT, ATTACK_WEIGHT, FLEE_WEIGHT, MISSILE_ENGAGEMENT_RADIUS, HEAT_DISSIPATION_RATE, ENERGY_REGEN_RATE, DELTA_V_CONSUMPTION_RATE, OVERHEATING_DAMAGE, EMP_DURATION, MAX_ANGULAR_SPEED } from './constants.js';
+import { LOGI_SEARCH_RANGE, LOGI_REPAIR_RATE, LOGI_SELF_ENERGY_COST, LOGI_SUPPLY_ENERGY, LOGI_SUPPLY_DV, LOGI_SUPPLY_COOL, LOGI_SUPPLY_AMMO, MAX_FORCE, PERCEPTION_RADIUS, SEPARATION_RADIUS, SEPARATION_WEIGHT, ALIGNMENT_WEIGHT, COHESION_WEIGHT, ATTACK_WEIGHT, FLEE_WEIGHT, MISSILE_ENGAGEMENT_RADIUS, HEAT_DISSIPATION_RATE, ENERGY_REGEN_RATE, DELTA_V_CONSUMPTION_RATE, OVERHEATING_DAMAGE, EMP_DURATION, MAX_ANGULAR_SPEED } from './constants.js';
 
 export class Ship {
     constructor(x,y,fleet, shipTypeKey) {
@@ -17,7 +17,8 @@ export class Ship {
         this.typeLabel = t.label;
         this.maxHealth = t.maxHealth;
         this.health = this.maxHealth;
-        this.maxSpeed = t.maxSpeed;
+        // 移除速度上限，使用最大加速度
+        this.maxAcceleration = t.maxAcceleration || 0.08;
         this.weaponSlots = t.weaponSlots;
 
         // 系统管理
@@ -29,6 +30,10 @@ export class Ship {
         this.deltaV = this.maxDeltaV;
         this.empedUntil = 0; // EMP 持续时间
         this.jamming = false; // 是否被干扰
+
+        // 新增：弹药系统（按体积）
+        this.ammoCapacity = (DEFAULT_SHIP_AMMO_CAPACITY[this.typeKey] !== undefined) ? DEFAULT_SHIP_AMMO_CAPACITY[this.typeKey] : 0;
+        this.ammoVolume = this.ammoCapacity; // 初始满弹
 
         // 后勤属性
         this.isLogistics = !!t.logisticsType;
@@ -77,12 +82,10 @@ export class Ship {
     seek(target) {
         const dx = target.x - this.position.x;
         const dy = target.y - this.position.y;
-        const shortestDx = dx > (5000/2) ? dx - 5000 : (dx < -(5000/2) ? dx + 5000 : dx);
-        const shortestDy = dy > (3000/2) ? dy - 3000 : (dy < -(3000/2) ? dy + 3000 : dy);
-        const desired = new Vector(shortestDx, shortestDy);
-        desired.setMag(this.maxSpeed);
+        const desired = new Vector(dx, dy);
+        desired.setMag(this.maxAcceleration * 1000);
         const steer = desired.clone().sub(this.velocity);
-        steer.limit(MAX_FORCE);
+        steer.limit(this.maxAcceleration);
         return steer;
     }
 
@@ -97,20 +100,25 @@ export class Ship {
                 steer.add(diff); count++;
             }
         }
-        if (count > 0) { steer.div(count); steer.setMag(this.maxSpeed); steer.sub(this.velocity); steer.limit(MAX_FORCE); }
+        if (count > 0) { steer.div(count); /*去掉目标速度上限*/ steer.sub(this.velocity); steer.limit(this.maxAcceleration); }
         return steer;
     }
 
     alignment(ships) {
-        const steer = new Vector(0,0); let count=0;
+        const desired = new Vector(0,0); let count=0;
         for (const other of ships) {
             const d = Math.sqrt(Math.pow(this.position.x - other.position.x,2) + Math.pow(this.position.y - other.position.y,2));
             if (other !== this && other.fleet === this.fleet && d < PERCEPTION_RADIUS) {
-                steer.add(other.velocity); count++;
+                desired.add(other.velocity); count++;
             }
         }
-        if (count>0) { steer.div(count); steer.setMag(this.maxSpeed); steer.sub(this.velocity); steer.limit(MAX_FORCE); }
-        return steer;
+        if (count>0) { 
+            desired.div(count); // 计算周围飞船的平均速度作为期望速度
+            const steer = desired.clone().sub(this.velocity); // 从期望速度计算转向力
+            steer.limit(this.maxAcceleration);
+            return steer;
+        }
+        return desired;
     }
 
     cohesion(ships) {
@@ -131,12 +139,13 @@ export class Ship {
         }
         // 如果有手动输入，处理手动控制逻辑
         if (inputs) {
-            if (inputs.up) this.velocity.y -= 0.15;
-            if (inputs.down) this.velocity.y += 0.15;
-            if (inputs.left) this.velocity.x -= 0.15;
-            if (inputs.right) this.velocity.x += 0.15;
-
-            this.velocity.limit(this.maxSpeed * 1.6);
+            const thrust = new Vector(0,0);
+            const thrustUnit = this.maxAcceleration; // 单次施力按最大加速度
+            if (inputs.up) thrust.y -= thrustUnit;
+            if (inputs.down) thrust.y += thrustUnit;
+            if (inputs.left) thrust.x -= thrustUnit;
+            if (inputs.right) thrust.x += thrustUnit;
+            if (thrust.x !== 0 || thrust.y !== 0) this.applyForce(thrust);
 
             // 自动反舰：选取最近敌舰进行攻击
             if (this.autoAntiShip) {
@@ -144,12 +153,10 @@ export class Ship {
                     let nearest = null; let nearestDist = Infinity;
                     for (const s of window.__allShips || []) {
                         if (s === this || s.fleet === this.fleet || s.health <= 0) continue;
-                        const dx = Math.abs(this.position.x - s.position.x);
-                        const dy = Math.abs(this.position.y - s.position.y);
-                        const distanceX = Math.min(dx, 5000 - dx);
-                        const distanceY = Math.min(dy, 3000 - dy);
-                        const d = Math.hypot(distanceX, distanceY);
-                        if (d < nearestDist) { nearestDist = d; nearest = s; }
+                        const dx = this.position.x - s.position.x;
+                        const dy = this.position.y - s.position.y;
+                        const d = Math.hypot(dx, dy);
+                        if (d < nearestDist) { nearest = s; nearestDist = d; }
                     }
                     if (nearest) {
                         this.manualTarget = nearest;
@@ -169,11 +176,9 @@ export class Ship {
                     const isMissile = p.constructor && p.constructor.name === 'SeekingProjectile';
                     const isDrone = p.constructor && p.constructor.name === 'Drone';
                     if (!((isMissile && this.autoAntiMissile) || (isDrone && this.autoAntiDrone))) continue;
-                    const dx = Math.abs(this.position.x - p.position.x);
-                    const dy = Math.abs(this.position.y - p.position.y);
-                    const distanceX = Math.min(dx, 5000 - dx);
-                    const distanceY = Math.min(dy, 3000 - dy);
-                    const d = Math.hypot(distanceX, distanceY);
+                    const dx = this.position.x - p.position.x;
+                    const dy = this.position.y - p.position.y;
+                    const d = Math.hypot(dx, dy);
                     if (d < bestDist) { bestDist = d; bestTarget = p; }
                 }
                 if (bestTarget) {
@@ -207,21 +212,19 @@ export class Ship {
                 let best = null; let bestScore = -Infinity;
                 for (const ally of (window.__allShips || ships)) {
                     if (!ally || ally === this || ally.fleet !== this.fleet || ally.health <= 0) continue;
-                    const dx = Math.abs(this.position.x - ally.position.x);
-                    const dy = Math.abs(this.position.y - ally.position.y);
-                    const distanceX = Math.min(dx, 5000 - dx);
-                    const distanceY = Math.min(dy, 3000 - dy);
-                    const d = Math.hypot(distanceX, distanceY);
+                    const dx = this.position.x - ally.position.x;
+                    const dy = this.position.y - ally.position.y;
+                    const d = Math.hypot(dx, dy);
                     if (d > LOGI_SEARCH_RANGE) continue;
                     let need = 0;
                     if (this.logisticsType === 'repair') {
                         need = (ally.maxHealth - ally.health);
                     } else if (this.logisticsType === 'supply') {
-                        // 需求：能量缺口 + ΔV 缺口 + 过热（越热越需要）
                         const energyNeed = (ally.maxEnergy - ally.energy);
-                        const dvNeed = (ally.maxDeltaV - ally.deltaV) * 0.2; // ΔV 权重稍低
-                        const heatNeed = (ally.heat || 0) * 0.5; // 正向（越热越需要冷却）
-                        need = energyNeed + dvNeed + heatNeed;
+                        const dvNeed = (ally.maxDeltaV - ally.deltaV) * 0.25;
+                        const heatNeed = (ally.heat || 0) * 0.4;
+                        const ammoNeed = (typeof ally.ammoCapacity === 'number' && ally.ammoCapacity > 0) ? Math.max(0, ally.ammoCapacity - (ally.ammoVolume || 0)) * 0.5 : 0;
+                        need = energyNeed + dvNeed + heatNeed + ammoNeed;
                     }
                     // 根据需求/距离打分（越近越高，越需要越高）
                     const score = need - d * 0.5;
@@ -290,9 +293,11 @@ export class Ship {
         } else if (this.health < this.maxHealth/2 && closestEnemy) {
             this.state = 'flee';
         } else {
-            const pwp = weaponProps[this.primaryWeapon];
-            if (closestEnemy && minDistance < pwp.range) this.state = 'attack';
-            else this.state = 'patrol';
+            this.state = 'patrol';
+
+            for (const weapon of this.weapons) {
+                if (closestEnemy && minDistance < weaponProps[weapon].range) this.state = 'attack';
+            }
         }
 
         const separation = this.separation(ships);
@@ -327,8 +332,8 @@ export class Ship {
                     attackForce = this.seek(closestEnemy.position);
                 } else if (minDistance < SEPARATION_RADIUS) {
                     const evade = new Vector(this.position.x - closestEnemy.position.x, this.position.y - closestEnemy.position.y);
-                    evade.setMag(this.maxSpeed);
-                    attackForce = new Vector(evade.x, evade.y); attackForce.sub(this.velocity); attackForce.limit(MAX_FORCE);
+                    evade.setMag(this.maxAcceleration * 10);
+                    attackForce = new Vector(evade.x, evade.y); attackForce.sub(this.velocity); attackForce.limit(this.maxAcceleration);
                 } else {
                     attackForce = new Vector(0,0);
                 }
@@ -337,8 +342,8 @@ export class Ship {
                     attackForce = this.seek(closestEnemy.position);
                 } else if (minDistance < pwp.range * 0.5) {
                     const evade = new Vector(this.position.x - closestEnemy.position.x, this.position.y - closestEnemy.position.y);
-                    evade.setMag(this.maxSpeed);
-                    attackForce = new Vector(evade.x, evade.y); attackForce.sub(this.velocity); attackForce.limit(MAX_FORCE);
+                    evade.setMag(this.maxAcceleration * 10);
+                    attackForce = new Vector(evade.x, evade.y); attackForce.sub(this.velocity); attackForce.limit(this.maxAcceleration);
                 } else attackForce = new Vector(0,0);
             }
             attackForce.mult(ATTACK_WEIGHT);
@@ -347,8 +352,8 @@ export class Ship {
             if (idx !== -1) this.shoot(idx, closestEnemy, projectiles);
         } else if (this.state === 'flee' && closestEnemy) {
             const evade = new Vector(this.position.x - closestEnemy.position.x, this.position.y - closestEnemy.position.y);
-            evade.setMag(this.maxSpeed);
-            const steer = new Vector(evade.x, evade.y); steer.sub(this.velocity); steer.limit(MAX_FORCE);
+            evade.setMag(this.maxAcceleration * 10);
+            const steer = new Vector(evade.x, evade.y); steer.sub(this.velocity); steer.limit(this.maxAcceleration);
             steer.mult(FLEE_WEIGHT);
             this.applyForce(steer);
         } else {
@@ -386,11 +391,18 @@ export class Ship {
         if (this.heat + props.heatGen > this.maxHeat * 0.9) return; // 防止过热
         if (this.empedUntil > 0 && !(wtype === WEAPON_COIL || wtype === WEAPON_RAPID_ENERGY)) return; // EMP 只影响非动能武器，速射动能与线圈炮可射击
 
+        // 新增：检查弹药（激光武器不消耗弹药）
+        const isLaser = (wtype === WEAPON_PULSE_LASER || wtype === WEAPON_CONTINUOUS_LASER);
+        const ammoPerShot = AMMO_VOLUME_PER_SHOT[wtype] ?? 0;
+        if (!isLaser && ammoPerShot > 0) {
+            if ((this.ammoVolume || 0) < ammoPerShot) return; // 弹药不足
+        }
+
         const dx = this.position.x - target.position.x;
         const dy = this.position.y - target.position.y;
         const distanceX = Math.min(Math.abs(dx), 5000 - Math.abs(dx));
         const distanceY = Math.min(Math.abs(dy), 3000 - Math.abs(dy));
-        const distance = Math.sqrt(distanceX*distanceX + distanceY*distanceY);
+        const distance = Math.hypot(distanceX, distanceY);
 
         let rangeCheck = props.range;
         if (target.constructor.name === 'SeekingProjectile') rangeCheck = MISSILE_ENGAGEMENT_RADIUS;
@@ -399,7 +411,7 @@ export class Ship {
         const ignoreRange = this.fireControlOverride === true;
 
         // 激光武器（立即击中）
-        if (wtype === WEAPON_PULSE_LASER || wtype === WEAPON_CONTINUOUS_LASER) {
+        if (isLaser) {
             let didHit = false;
             if (ignoreRange || distance <= rangeCheck) {
                 // 命中判定：有偏移概率
@@ -424,13 +436,12 @@ export class Ship {
                 if (target.health !== undefined && dist2 <= 12) {
                     target.health -= actualDamage;
                     didHit = true;
+                    this.heat += props.heatGen;
+                    this.shootCooldowns[weaponIndex] = props.cooldown;
+                    this.energy -= props.energyCost;
                 }
                 this.laserTarget = target && didHit ? target : null; // 只有命中才保留激光束
                 this.laserActiveUntil = 5;
-                this.shootCooldowns[weaponIndex] = props.cooldown;
-                this.energy -= props.energyCost;
-                this.heat += props.heatGen;
-
             } else {
                 this.laserTarget = null;
             }
@@ -454,17 +465,20 @@ export class Ship {
                 this.shootCooldowns[weaponIndex] = props.cooldown;
                 this.energy -= props.energyCost;
                 this.heat += props.heatGen;
+                if (ammoPerShot > 0) this.ammoVolume -= ammoPerShot; // 如果设置了体积
             }
             return;
         }
 
         // 无人机发射
         if (wtype === WEAPON_DRONE_BAY) {
-            if (this.drones.length < 3) { // 每艘船最多3架无人机
-                const angle = Math.random() * Math.PI * 2;
+            if (this.drones.length < 30) { // 每艘船最多30架无人机
+                const random_angle = Math.random() * Math.PI * 2;
+                const radius = 7;
+
                 const drone = new Drone(
-                    this.position.x + Math.cos(angle) * 30,
-                    this.position.y + Math.sin(angle) * 30,
+                    this.position.x + Math.cos(random_angle) * radius,
+                    this.position.y + Math.sin(random_angle) * radius,
                     this.fleet,
                     this
                 );
@@ -473,15 +487,37 @@ export class Ship {
                 this.shootCooldowns[weaponIndex] = props.cooldown;
                 this.energy -= props.energyCost;
                 this.heat += props.heatGen;
+                if (ammoPerShot > 0) this.ammoVolume -= ammoPerShot; // 如果设置了体积
             }
             return;
         }
 
         if (!ignoreRange && distance > rangeCheck) return;
-
-        const shortestDx = dx > 5000/2 ? dx - 5000 : (dx < -5000/2 ? dx + 5000 : dx);
-        const shortestDy = dy > 3000/2 ? dy - 3000 : (dy < -3000/2 ? dy + 3000 : dy);
-        let desired = new Vector(-shortestDx, -shortestDy);
+        
+        const projectileSpeed = props.speed || 30;
+        const targetVel = (target && target.velocity && typeof target.velocity.x === 'number') ? target.velocity : new Vector(0, 0);
+        const rx = target.position.x - this.position.x;
+        const ry = target.position.y - this.position.y;
+        const a = targetVel.x * targetVel.x + targetVel.y * targetVel.y - projectileSpeed * projectileSpeed;
+        const b2 = 2 * (rx * targetVel.x + ry * targetVel.y);
+        const c2 = rx * rx + ry * ry;
+        let tLead;
+        if (Math.abs(a) < 1e-6) {
+            tLead = (Math.abs(b2) < 1e-6) ? Infinity : (-c2 / b2);
+        } else {
+            const disc = b2 * b2 - 4 * a * c2;
+            if (disc < 0) {
+                tLead = Infinity;
+            } else {
+                const sqrtDisc = Math.sqrt(disc);
+                const t1 = (-b2 - sqrtDisc) / (2 * a);
+                const t2 = (-b2 + sqrtDisc) / (2 * a);
+                tLead = Math.min(t1 > 0 ? t1 : Infinity, t2 > 0 ? t2 : Infinity);
+            }
+        }
+        let aimX = isFinite(tLead) ? (rx + targetVel.x * tLead) : rx;
+        let aimY = isFinite(tLead) ? (ry + targetVel.y * tLead) : ry;
+        let desired = new Vector(aimX, aimY);
 
         // 在火控解锁下，发射方向加入角度偏差
         if (ignoreRange) {
@@ -519,6 +555,7 @@ export class Ship {
         this.shootCooldowns[weaponIndex] = props.cooldown;
         this.energy -= props.energyCost;
         this.heat += props.heatGen;
+        if (ammoPerShot > 0) this.ammoVolume -= ammoPerShot; // 统一扣除非激光武器的弹药体积
     }
 
     update(timeScale) {
@@ -550,9 +587,16 @@ export class Ship {
         this.energy += ENERGY_REGEN_RATE * timeScale;
         if (this.energy > this.maxEnergy) this.energy = this.maxEnergy;
 
-        // ΔV 管理（移动消耗）
-        if (this.velocity.mag() > 0.1) {
-            this.deltaV -= DELTA_V_CONSUMPTION_RATE * this.velocity.mag() * timeScale;
+        // 先对加速度限幅；若ΔV耗尽则无法继续加速
+        this.acceleration.limit(this.maxAcceleration);
+        if (this.deltaV <= 0) {
+            this.acceleration.mult(0);
+        }
+
+        // ΔV 管理（改为按当前加速度消耗）
+        const accelMag = this.acceleration.mag();
+        if (accelMag > 0) {
+            this.deltaV -= DELTA_V_CONSUMPTION_RATE * accelMag * timeScale;
             if (this.deltaV < 0) this.deltaV = 0;
         }
 
@@ -584,7 +628,8 @@ export class Ship {
                         const energyNeed = (ally.maxEnergy - ally.energy);
                         const dvNeed = (ally.maxDeltaV - ally.deltaV) * 0.25;
                         const heatNeed = (ally.heat || 0) * 0.4;
-                        need = energyNeed + dvNeed + heatNeed;
+                        const ammoNeed = (typeof ally.ammoCapacity === 'number' && ally.ammoCapacity > 0) ? Math.max(0, ally.ammoCapacity - (ally.ammoVolume || 0)) * 0.5 : 0;
+                        need = energyNeed + dvNeed + heatNeed + ammoNeed;
                     }
                     if (need > bestNeed) { bestNeed = need; best = ally; }
                 }
@@ -611,11 +656,12 @@ export class Ship {
                         let eAmt = LOGI_SUPPLY_ENERGY * timeScale;
                         let dvAmt = LOGI_SUPPLY_DV * timeScale;
                         let coolAmt = LOGI_SUPPLY_COOL * timeScale;
+                        let ammoAmt = LOGI_SUPPLY_AMMO * timeScale;
                         // 根据可用能量缩放
-                        let spend = (eAmt + dvAmt*0.05 + coolAmt*0.02) * LOGI_SELF_ENERGY_COST; // ΔV 和冷却消耗相对少
+                        let spend = (eAmt + dvAmt*0.05 + coolAmt*0.02 + ammoAmt*0.08) * LOGI_SELF_ENERGY_COST; // 弹药补给相对能量代价
                         const energyAvail = Math.max(0, this.energy - 0);
                         const ratio = spend > 0 ? Math.min(1, energyAvail / spend) : 1;
-                        eAmt *= ratio; dvAmt *= ratio; coolAmt *= ratio; spend *= ratio;
+                        eAmt *= ratio; dvAmt *= ratio; coolAmt *= ratio; ammoAmt *= ratio; spend *= ratio;
                         // 施加
                         if (target.energy < target.maxEnergy) {
                             const realE = Math.min(eAmt, target.maxEnergy - target.energy);
@@ -632,6 +678,12 @@ export class Ship {
                             target.heat = Math.max(0, target.heat - realCool);
                             this.energy = Math.max(0, this.energy - realCool * 0.02 * LOGI_SELF_ENERGY_COST);
                         }
+                        // 弹药补给（不区分弹种，按体积补）
+                        if (typeof target.ammoCapacity === 'number' && target.ammoCapacity > 0 && (target.ammoVolume || 0) < target.ammoCapacity) {
+                            const realAmmo = Math.min(ammoAmt, target.ammoCapacity - (target.ammoVolume || 0));
+                            target.ammoVolume = (target.ammoVolume || 0) + realAmmo;
+                            this.energy = Math.max(0, this.energy - realAmmo * 0.08 * LOGI_SELF_ENERGY_COST);
+                        }
                     }
                 }
             }
@@ -639,18 +691,15 @@ export class Ship {
 
         // 运动更新
         const prevVel = this.velocity.clone();
+        // 应用加速度（已在上方限幅/守卫）
         const scaledAcceleration = this.acceleration.clone().mult(timeScale);
         this.velocity.add(scaledAcceleration);
-        
-        // ΔV 限制速度
-        const maxSpeedByDeltaV = this.deltaV > 10 ? this.maxSpeed : this.maxSpeed * 1; // ΔV逻辑还没写好这样的（）
-        this.velocity.limit(maxSpeedByDeltaV);
 
+        // 移除基于ΔV的速度上限
         // 限制角速度（转向角度变化）
         const prevAngle = Math.atan2(prevVel.y, prevVel.x);
         const newAngle = Math.atan2(this.velocity.y, this.velocity.x);
         let dAngle = newAngle - prevAngle;
-        // 归一化到 [-PI, PI]
         while (dAngle > Math.PI) dAngle -= Math.PI * 2;
         while (dAngle < -Math.PI) dAngle += Math.PI * 2;
         const maxAngular = MAX_ANGULAR_SPEED * timeScale;
@@ -660,15 +709,14 @@ export class Ship {
             this.velocity.x = Math.cos(clampedAngle) * speedMag;
             this.velocity.y = Math.sin(clampedAngle) * speedMag;
         }
-        
-        const sv = this.velocity.clone().mult(timeScale); 
+        const sv = this.velocity.clone().mult(timeScale);
         this.position.add(sv);
         this.acceleration.mult(0);
 
         // 更新无人机
         for (let i = this.drones.length - 1; i >= 0; i--) {
             const drone = this.drones[i];
-            if (drone.health <= 0 || drone.fuel <= 0) {
+            if (drone.health <= 0 || drone.deltaV <= 0) {
                 this.drones.splice(i, 1);
             }
         }
@@ -682,10 +730,23 @@ export class Ship {
     }
 
     edges(GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT) {
-        if (this.position.x > GAME_WORLD_WIDTH) this.position.x = 0;
-        if (this.position.x < 0) this.position.x = GAME_WORLD_WIDTH;
-        if (this.position.y > GAME_WORLD_HEIGHT) this.position.y = 0;
-        if (this.position.y < 0) this.position.y = GAME_WORLD_HEIGHT;
+        // 边界反弹或限制位置，不允许穿越
+        if (this.position.x > GAME_WORLD_WIDTH) {
+            this.position.x = GAME_WORLD_WIDTH;
+            this.velocity.x = 0; // 反弹并减速
+        }
+        if (this.position.x < 0) {
+            this.position.x = 0;
+            this.velocity.x = 0; // 反弹并减速
+        }
+        if (this.position.y > GAME_WORLD_HEIGHT) {
+            this.position.y = GAME_WORLD_HEIGHT;
+            this.velocity.y = 0; // 反弹并减速
+        }
+        if (this.position.y < 0) {
+            this.position.y = 0;
+            this.velocity.y = 0; // 反弹并减速
+        }
     }
 
     draw(ctx, camera, canvas, SHIP_SIZE, particleColors){

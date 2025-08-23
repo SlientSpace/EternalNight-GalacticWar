@@ -1,5 +1,5 @@
 import { Vector } from './vector.js';
-import { GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT, EMP_RANGE } from './constants.js';
+import { MAX_ANGULAR_SPEED, GAME_WORLD_WIDTH, GAME_WORLD_HEIGHT, EMP_RANGE, AMMO_VOLUME_PER_SHOT, WEAPON_DRONE_BAY, DRONE_ATTACK_MUTI } from './constants.js';
 
 // 粒子（特效）
 export class Particle {
@@ -49,9 +49,17 @@ export class Weapon {
         this.velocity = new Vector(vx,vy);
         this.fleet = fleet;
         this.damage = damage;
+        this.alive = true;
     }
-    update(timeScale){ const v = this.velocity.clone().mult(timeScale); this.position.add(v); }
-    isOffscreen(){ return this.position.x < -10 || this.position.x > GAME_WORLD_WIDTH + 10 || this.position.y < -10 || this.position.y > GAME_WORLD_HEIGHT + 10; }
+    update(timeScale){
+        const v = this.velocity.clone().mult(timeScale);
+        this.position.add(v);
+        // 硬边界：弹丸越界则标记为死亡
+        if (this.position.x < 0 || this.position.x > GAME_WORLD_WIDTH || this.position.y < 0 || this.position.y > GAME_WORLD_HEIGHT) {
+            this.alive = false;
+        }
+    }
+    isOffscreen(){ return !this.alive; }
     draw(){}
 }
 
@@ -61,6 +69,9 @@ export class KineticProjectile extends Weapon {
         super(x,y,vx,vy,fleet,damage);
         this.velocity.setMag(speed);
         this.color = color;
+    }
+    update(timeScale){
+        super.update(timeScale);
     }
     draw(ctx, camera){
         const screenX = (this.position.x - camera.x) * camera.zoom;
@@ -78,41 +89,113 @@ export class SeekingProjectile extends Weapon {
         this.velocity.setMag(speed);
         this.color = color;
         this.target = target;
-        this.maxSpeed = speed;
-        this.maxForce = 0.1;
-        this.fuel = 300;
+        this.maxSpeed = speed; // 保留作为期望速度参考
+        this.maxAcceleration = 0.3; // 导弹的最大加速度
+        this.acceleration = new Vector(0, 0); // 加速度向量
+        this.deltaV = 600; // 使用ΔV替代燃料
+        this.maxDeltaV = 600;
         this.warhead = warhead;
         this.health = 8; // 导弹血量较少，容易被激光摧毁
         this.maxHealth = 8;
+        this.navConstant = 3.5; // 比例导引常数 N（典型范围 3~5）
     }
+    
+    applyForce(force) {
+        this.acceleration.add(force);
+    }
+    
     update(ships, timeScale){
-        if (!this.target || (this.target.health !== undefined && this.target.health <= 0)) {
+        if (!this.target || (this.target.health !== undefined && this.target.health <= 0) || (this.target.alive !== undefined && this.target.alive == false)) {
+
             let closest=null; let minD=Infinity;
             for (const o of ships) {
-                if (o.fleet !== this.fleet && o.health > 0) {
-                    const dx = Math.abs(this.position.x - o.position.x), dy = Math.abs(this.position.y - o.position.y);
-                    const d = Math.sqrt(Math.min(dx,GAME_WORLD_WIDTH-dx)**2 + Math.min(dy,GAME_WORLD_HEIGHT-dy)**2);
+                if (o.fleet !== this.fleet && o.health > 0 && (this.target.alive == undefined || this.target.alive == true)) {
+                    const dx = this.position.x - o.position.x;
+                    const dy = this.position.y - o.position.y;
+                    const d = Math.sqrt(dx*dx + dy*dy);
                     if (d < minD){ minD=d; closest=o; }
                 }
             }
             this.target = closest;
         }
+        
+        // 寻路控制：比例导引（PN）
         if (this.target && this.target.health > 0) {
-            const dx = this.target.position.x - this.position.x;
-            const dy = this.target.position.y - this.position.y;
-            const shortestDx = dx > GAME_WORLD_WIDTH/2 ? dx - GAME_WORLD_WIDTH : (dx < -GAME_WORLD_WIDTH/2 ? dx + GAME_WORLD_WIDTH : dx);
-            const shortestDy = dy > GAME_WORLD_HEIGHT/2 ? dy - GAME_WORLD_HEIGHT : (dy < -GAME_WORLD_HEIGHT/2 ? dy + GAME_WORLD_HEIGHT : dy);
-            const desired = new Vector(shortestDx, shortestDy);
-            desired.setMag(this.maxSpeed);
-            const steer = desired.clone().sub(this.velocity);
-            steer.limit(this.maxForce);
-            this.velocity.add(steer); this.velocity.limit(this.maxSpeed);
+            const rx = this.target.position.x - this.position.x;
+            const ry = this.target.position.y - this.position.y;
+            const r2 = rx*rx + ry*ry;
+            if (r2 > 1e-6) {
+                const tvx = (this.target.velocity && typeof this.target.velocity.x === 'number') ? this.target.velocity.x : 0;
+                const tvy = (this.target.velocity && typeof this.target.velocity.y === 'number') ? this.target.velocity.y : 0;
+                const vrx = tvx - this.velocity.x;
+                const vry = tvy - this.velocity.y;
+                // 视线角速度 λ· = (r × v_rel) / |r|^2 （二维叉积标量）
+                const lambdaDot = (rx * vry - ry * vrx) / r2;
+                // 闭合速度 Vc = - (r · v_rel) / |r|
+                const rMag = Math.sqrt(r2);
+                const closing = -(rx * vrx + ry * vry) / (rMag || 1);
+                const N = this.navConstant || 3.5;
+                // 侧向加速度大小 a = N * Vc * |λ·|
+                const aMag = Math.abs(N * closing * lambdaDot);
+                // 法向单位向量（指向使导弹绕行方向与 λ· 符号一致）
+                let nx = -ry / (rMag || 1);
+                let ny =  rx / (rMag || 1);
+                if (lambdaDot < 0) { nx = -nx; ny = -ny; }
+                let ax = nx * aMag;
+                let ay = ny * aMag;
+                // 基本的追击分量，避免纯侧向导致不闭合
+                const k_chase = 0.05; // 轻微比例追击
+                ax += (rx / (rMag || 1)) * k_chase;
+                ay += (ry / (rMag || 1)) * k_chase;
+                const aVec = new Vector(ax, ay).limit(this.maxAcceleration);
+                this.applyForce(aVec);
+            }
         }
+        
+        // 加速度限制和ΔV消耗
+        this.acceleration.limit(this.maxAcceleration);
+        if (this.deltaV <= 0) {
+            this.acceleration.mult(0);
+        }
+        
+        // ΔV消耗（基于加速度大小）
+        const accelMag = this.acceleration.mag();
+        if (accelMag > 0) {
+            this.deltaV -= 1.2 * accelMag * timeScale; // 导弹ΔV消耗更快
+            if (this.deltaV < 0) this.deltaV = 0;
+        }
+        
+        // 应用加速度到速度
+        const scaledAcceleration = this.acceleration.clone().mult(timeScale);
+        this.velocity.add(scaledAcceleration);
+        
+        // 位置更新
         const sv = this.velocity.clone().mult(timeScale);
         this.position.add(sv);
-        this.fuel -= timeScale;
-        if (this.fuel <= 0) {
+        
+        // 重置加速度
+        this.acceleration.mult(0);
+
+        if (this.position.x > GAME_WORLD_WIDTH) {
+            this.position.x = GAME_WORLD_WIDTH;
+            this.velocity.x = 0; // 反弹并减速
+        }
+        if (this.position.x < 0) {
+            this.position.x = 0;
+            this.velocity.x = 0; // 反弹并减速
+        }
+        if (this.position.y > GAME_WORLD_HEIGHT) {
+            this.position.y = GAME_WORLD_HEIGHT;
+            this.velocity.y = 0; // 反弹并减速
+        }
+        if (this.position.y < 0) {
+            this.position.y = 0;
+            this.velocity.y = 0; // 反弹并减速
+        }
+        // ΔV耗尽时自毁
+        if (this.deltaV <= 0) {
             this.health = 0;
+            this.alive = false;
         }
     }
     draw(ctx, camera){
@@ -141,18 +224,18 @@ export class SeekingProjectile extends Weapon {
             ctx.fill();
             ctx.restore();
         }
-                // 燃料条
-        const fuelPercent = this.fuel / 300;
+        // ΔV条（替代燃料条）
+        const deltaVPercent = this.deltaV / this.maxDeltaV;
         const barWidth = 8 * camera.zoom;
         const barHeight = 1 * camera.zoom;
         const barX = screenX - barWidth/2;
         const barY = screenY + baseSize + 2 * camera.zoom;
         ctx.fillStyle = '#333';
         ctx.fillRect(barX, barY, barWidth, barHeight);
-        ctx.fillStyle = fuelPercent > 0.3 ? '#0099ff' : '#ff9900';
-        ctx.fillRect(barX, barY, barWidth * fuelPercent, barHeight);
+        ctx.fillStyle = deltaVPercent > 0.3 ? '#0099ff' : '#ff9900';
+        ctx.fillRect(barX, barY, barWidth * deltaVPercent, barHeight);
 
-        // 血量条（在燃料条下方）
+        // 血量条（在ΔV条下方）
         const healthPercent = Math.max(0, this.health / this.maxHealth); 
         const healthY = barY + barHeight + 1 * camera.zoom; // 往下偏移一点
         ctx.fillStyle = '#333';
@@ -189,11 +272,33 @@ export class EMPProjectile extends Weapon {
         this.range = EMP_RANGE; // EMP 影响范围
         this.proximityRange = Math.min(30, EMP_RANGE * 0.3); // 近炸感应范围
         
-        // 设置初始速度朝向目标
+        // 设置初速为对目标的提前量解算
         if (target) {
-            const dx = target.position.x - x;
-            const dy = target.position.y - y;
-            this.velocity = new Vector(dx, dy);
+            const rx = target.position.x - x;
+            const ry = target.position.y - y;
+            const tvx = (target.velocity && typeof target.velocity.x === 'number') ? target.velocity.x : 0;
+            const tvy = (target.velocity && typeof target.velocity.y === 'number') ? target.velocity.y : 0;
+            const s = this.speed || 0;
+            const a = tvx*tvx + tvy*tvy - s*s;
+            const b = 2 * (rx*tvx + ry*tvy);
+            const c = rx*rx + ry*ry;
+            let tLead;
+            if (Math.abs(a) < 1e-6) {
+                tLead = (Math.abs(b) < 1e-6) ? Infinity : (-c / b);
+            } else {
+                const disc = b*b - 4*a*c;
+                if (disc < 0) {
+                    tLead = Infinity;
+                } else {
+                    const sd = Math.sqrt(disc);
+                    const t1 = (-b - sd) / (2*a);
+                    const t2 = (-b + sd) / (2*a);
+                    tLead = Math.min(t1 > 0 ? t1 : Infinity, t2 > 0 ? t2 : Infinity);
+                }
+            }
+            const aimX = isFinite(tLead) ? (rx + tvx * tLead) : rx;
+            const aimY = isFinite(tLead) ? (ry + tvy * tLead) : ry;
+            this.velocity = new Vector(aimX, aimY);
             this.velocity.setMag(this.speed);
         } else {
             this.velocity = new Vector(0, 0);
@@ -201,6 +306,7 @@ export class EMPProjectile extends Weapon {
     }
 
     update(timeScale) {
+        super.update()
         // 如果已激活或没有目标，停止运动
         if (this.activated || !this.target) {
             this.lifespan -= timeScale;
@@ -280,48 +386,56 @@ export class Drone extends Weapon {
         this.motherShip = motherShip;
         this.health = 20;
         this.maxHealth = 20;
-        this.fuel = 600; // 燃料限制
-        this.maxSpeed = 3.5;
-        this.maxForce = 0.08;
+        this.deltaV = 800; // 使用ΔV替代燃料
+        this.maxDeltaV = 800;
+        this.maxSpeed = 1.5; // 仅作期望速度参考
+        this.maxAcceleration = 0.20;
+        this.acceleration = new Vector(0, 0);
         this.target = null;
         this.state = 'patrol'; // patrol, attack, return
-        this.orbitAngle = Math.random() * Math.PI * 2;
-        this.orbitRadius = 60 + Math.random() * 40;
         this.attackCooldown = 0;
-        this.size = 3;
+        this.size = 3;                    // 平滑系数（越小越平滑
+       
+        this.angle = Math.random() * Math.PI * 2;
+        this.radius = 15 + Math.random() * 5;
+        this.formationOffset = new Vector(Math.cos(this.angle) * this.radius, Math.sin(this.angle) * this.radius);
+
     }
     
+    applyForce(force) { this.acceleration.add(force); }
+    
     update(ships, timeScale) {
-        this.fuel -= timeScale;
         this.attackCooldown -= timeScale;
         if (this.attackCooldown < 0) this.attackCooldown = 0;
         
-        // 寻找目标
+        // 失去目标则搜索
         if (!this.target || this.target.health <= 0) {
             let closest = null;
             let minDist = Infinity;
             for (const ship of ships) {
                 if (ship.fleet !== this.fleet && ship.health > 0) {
-                    const dist = Math.sqrt(
-                        Math.pow(this.position.x - ship.position.x, 2) + 
-                        Math.pow(this.position.y - ship.position.y, 2)
-                    );
-                    if (dist < 200 && dist < minDist) {
-                        minDist = dist;
-                        closest = ship;
-                    }
+                    const dist = Math.hypot(this.position.x - ship.position.x, this.position.y - ship.position.y);
+                    if (dist < 200 && dist < minDist) { minDist = dist; closest = ship; }
                 }
             }
             this.target = closest;
         }
         
         let desired = new Vector(0, 0);
-
-        if (this.fuel <= 0) {
+        
+        if (this.deltaV <= 0) {
             this.health = 0;
+            this.alive = false;
+            return;
+        }
+        
+        for (const drone of this.motherShip.drones) {
+            if (drone != this && this.position.clone().sub(drone.position).mag() < 5) {
+                this.applyForce(this.position.clone().sub(drone.position).setMag(1).mult(0.01));
+            }
         }
 
-        if (this.fuel < 300 || !this.motherShip || this.motherShip.health <= 0) {
+        if (this.deltaV < this.maxDeltaV * 0.5 || !this.motherShip || this.motherShip.health <= 0) {
             // 返回母舰或自毁
             this.state = 'return';
             if (this.motherShip && this.motherShip.health > 0) {
@@ -329,55 +443,121 @@ export class Drone extends Weapon {
                     this.motherShip.position.x - this.position.x,
                     this.motherShip.position.y - this.position.y
                 );
-                desired.setMag(this.maxSpeed);
+                if (desired.mag() < 5) {
+                    this.motherShip.ammoVolume = Math.min(this.motherShip.ammoVolume + AMMO_VOLUME_PER_SHOT[WEAPON_DRONE_BAY], this.motherShip.ammoCapacity);
+                    this.health = 0;
+                    this.alive = false;
+                }
+
+                // 参考母舰速度
+                if (this.motherShip.velocity) {
+                    desired.add(this.motherShip.velocity);
+                }
+                desired.setMag(this.motherShip.velocity.mag() + this.maxSpeed);
+
             } else {
                 this.health = 0; // 母舰已毁，自毁
+                this.alive = false;
             }
         } else if (this.target && this.target.health > 0) {
             // 攻击模式
             this.state = 'attack';
-            const dist = Math.sqrt(
-                Math.pow(this.position.x - this.target.position.x, 2) + 
-                Math.pow(this.position.y - this.target.position.y, 2)
-            );
-            
+            const dist = Math.hypot(this.position.x - this.target.position.x, this.position.y - this.target.position.y);
             if (dist < 30 && this.attackCooldown <= 0) {
                 // 攻击目标
-                this.target.health -= this.damage;
+                this.target.health -= 0.1;
                 this.attackCooldown = 20;
-                this.health -= 5; // 撞击伤害
             }
-            
             desired = new Vector(
                 this.target.position.x - this.position.x,
                 this.target.position.y - this.position.y
             );
-            desired.setMag(this.maxSpeed);
+            // 参考目标速度
+            if (this.target.velocity) {
+                desired.add(new Vector(this.target.velocity.x * DRONE_ATTACK_MUTI, this.target.velocity.y * DRONE_ATTACK_MUTI));
+            }
+            desired.setMag(this.target.velocity.mag() + this.maxSpeed);
         } else {
-            // 巡逻模式 - 围绕母舰盘旋
+            // ---- 固定编队跟随模式 ----
             this.state = 'patrol';
-            this.orbitAngle += 0.02 * timeScale;
-            const orbitX = this.motherShip.position.x + Math.cos(this.orbitAngle) * this.orbitRadius;
-            const orbitY = this.motherShip.position.y + Math.sin(this.orbitAngle) * this.orbitRadius;
-            
-            desired = new Vector(orbitX - this.position.x, orbitY - this.position.y);
-            desired.setMag(this.maxSpeed);
+            this.angle += 0.02 * timeScale;
+            this.formationOffset = new Vector(Math.cos(this.angle) * this.radius, Math.sin(this.angle) * this.radius);
+
+            if (!this.motherShip || this.motherShip.health <= 0) {
+                this.health = 0; // 没有母舰就自毁
+            } else {
+                // 目标点 = 母舰位置 + 固定偏移
+                const targetPos = this.motherShip.position.clone().add(this.formationOffset);
+
+                // 母舰速度分量
+                const motherVel = this.motherShip.velocity ? this.motherShip.velocity.clone() : new Vector(0, 0);
+
+                // 指向编队点的矫正速度
+                const toFormation = targetPos.clone().sub(this.position);
+
+                // 最终期望速度 = 母舰速度 + 矫正速度
+                desired = motherVel.clone().add(toFormation);
+            }
         }
+
+
         
-        // 应用运动
+        // 由期望速度计算转向力，但用加速度限制
         const steer = desired.clone().sub(this.velocity);
-        steer.limit(this.maxForce);
-        this.velocity.add(steer.clone().mult(timeScale));
-        this.velocity.limit(this.maxSpeed);
+        steer.limit(this.maxAcceleration);
+        this.applyForce(steer);
         
-        const movement = this.velocity.clone().mult(timeScale);
-        this.position.add(movement);
+        // 加速度限幅与ΔV消耗
+        this.acceleration.limit(this.maxAcceleration);
+        const accelMag = this.acceleration.mag();
+        if (accelMag > 0) {
+            this.deltaV -= 0.8 * accelMag * timeScale;
+            if (this.deltaV < 0) this.deltaV = 0;
+        }
+
+        const prevVel = this.velocity.clone();
+        // 应用加速度
+        this.velocity.add(this.acceleration.clone().mult(timeScale));
         
-        // 边界处理
-        if (this.position.x < 0) this.position.x = GAME_WORLD_WIDTH;
-        if (this.position.x > GAME_WORLD_WIDTH) this.position.x = 0;
-        if (this.position.y < 0) this.position.y = GAME_WORLD_HEIGHT;
-        if (this.position.y > GAME_WORLD_HEIGHT) this.position.y = 0;
+        // 更新位置
+        this.position.add(this.velocity.clone().mult(timeScale));
+
+        // 限制角速度（转向角度变化）
+        const prevAngle = Math.atan2(prevVel.y, prevVel.x);
+        const newAngle = Math.atan2(this.velocity.y, this.velocity.x);
+        let dAngle = newAngle - prevAngle;
+        while (dAngle > Math.PI) dAngle -= Math.PI * 2;
+        while (dAngle < -Math.PI) dAngle += Math.PI * 2;
+        const maxAngular = 50 * MAX_ANGULAR_SPEED * timeScale;
+
+        if (Math.abs(dAngle) > maxAngular) {
+            const clampedAngle = prevAngle + Math.sign(dAngle) * maxAngular;
+            const speedMag = this.velocity.mag();
+            this.velocity.x = Math.cos(clampedAngle) * speedMag;
+            this.velocity.y = Math.sin(clampedAngle) * speedMag;
+        }
+        const sv = this.velocity.clone().mult(timeScale);
+        this.position.add(sv);
+
+        // 重置加速度
+        this.acceleration.mult(0);
+        
+        if (this.position.x > GAME_WORLD_WIDTH) {
+            this.position.x = GAME_WORLD_WIDTH;
+            this.velocity.x = 0; // 反弹并减速
+        }
+        if (this.position.x < 0) {
+            this.position.x = 0;
+            this.velocity.x = 0; // 反弹并减速
+        }
+        if (this.position.y > GAME_WORLD_HEIGHT) {
+            this.position.y = GAME_WORLD_HEIGHT;
+            this.velocity.y = 0; // 反弹并减速
+        }
+        if (this.position.y < 0) {
+            this.position.y = 0;
+            this.velocity.y = 0; // 反弹并减速
+        }
     }
     
     draw(ctx, camera) {
@@ -415,18 +595,18 @@ export class Drone extends Weapon {
             ctx.restore();
         }
         
-        // 燃料条
-        const fuelPercent = this.fuel / 600;
+        // ΔV条
+        const dvPercent = this.deltaV / this.maxDeltaV;
         const barWidth = 8 * camera.zoom;
         const barHeight = 1 * camera.zoom;
         const barX = screenX - barWidth/2;
         const barY = screenY + baseSize + 2 * camera.zoom;
         ctx.fillStyle = '#333';
         ctx.fillRect(barX, barY, barWidth, barHeight);
-        ctx.fillStyle = fuelPercent > 0.3 ? '#0099ff' : '#ff9900';
-        ctx.fillRect(barX, barY, barWidth * fuelPercent, barHeight);
+        ctx.fillStyle = dvPercent > 0.3 ? '#0099ff' : '#ff9900';
+        ctx.fillRect(barX, barY, barWidth * dvPercent, barHeight);
 
-        // 血量条（在燃料条下方）
+        // 血量条（在ΔV条下方）
         const healthPercent = Math.max(0, this.health / this.maxHealth); 
         const healthY = barY + barHeight + 1 * camera.zoom; // 往下偏移一点
         ctx.fillStyle = '#333';
@@ -436,6 +616,6 @@ export class Drone extends Weapon {
     }
     
     isOffscreen() {
-        return this.health <= 0 || this.fuel <= 0;
+        return this.health <= 0 || this.deltaV <= 0;
     }
 }
